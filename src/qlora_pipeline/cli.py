@@ -89,6 +89,43 @@ def data_cmd(
     typer.echo(f"data card:    {res['data_card']}")
 
 
+def _print_summary(s: dict) -> None:
+    keys = ["output_name", "method", "global_steps", "trainable_pct", "peak_mem_allocated_gb", "peak_mem_reserved_gb",
+            "tokens_per_sec", "wall_time_s", "train_loss_first", "train_loss_last", "best_eval_loss",
+            "best_val_perplexity", "gpu.temp_max_c", "gpu.power_mean_w", "gpu.sm_clock_min_mhz",
+            "gpu.throttle_thermal_pct", "adapter_dir", "mlflow_run_id"]  # fmt: skip
+    for k in keys:
+        typer.echo(f"  {k:24} {s.get(k)}")
+
+
+@app.command("train")
+def train_cmd(config: str = typer.Option("llama2_7b_qlora.yaml", "--config", "-c"), set_: list[str] = SetOpt) -> None:
+    """Phase 2: train (qlora | lora | full per config). Resumes from the last checkpoint automatically."""
+    from qlora_pipeline.config import load_config
+    from qlora_pipeline.train import run_train
+
+    _print_summary(run_train(load_config(config, set_), stage="train"))
+
+
+@app.command("smoke")
+def smoke_cmd(
+    config: str = typer.Option("proxy_qlora.yaml", "--config", "-c"),
+    steps: int = typer.Option(50, help="optimizer steps"),
+    set_: list[str] = SetOpt,
+) -> None:
+    """Phase 2 gate: short proxy QLoRA run; PASS only if the loss goes down."""
+    from qlora_pipeline.config import load_config
+    from qlora_pipeline.train import run_train, smoke_verdict
+
+    over = [f"train.max_steps={steps}", "train.eval_strategy=no", "train.logging_steps=1", "train.resume=none",
+            f"train.save_steps={steps * 10}", "train.output_name=smoke-proxy-qlora", *(set_ or [])]  # fmt: skip
+    s = run_train(load_config(config, over), stage="smoke")
+    _print_summary(s)
+    ok, first, last = smoke_verdict(s["loss_history"])
+    typer.echo(f"smoke: mean loss first 5 steps {first:.4f} -> last 5 steps {last:.4f}: {'PASS' if ok else 'FAIL'}")
+    raise typer.Exit(0 if ok else 1)
+
+
 def _later(phase: int):
     def _stub() -> None:
         typer.echo(f"Not implemented yet: arrives in Phase {phase}.")
@@ -98,7 +135,7 @@ def _later(phase: int):
 
 
 for _name, _phase in [
-    ("smoke", 2), ("train", 2), ("eval", 3), ("bench", 4),
+    ("eval", 3), ("bench", 4),
     ("merge", 5), ("serve", 6), ("chat", 6), ("load-test", 6),
 ]:  # fmt: skip
     app.command(_name, help=f"(Phase {_phase})")(_later(_phase))

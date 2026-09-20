@@ -48,3 +48,13 @@ def test_apply_overrides_does_not_mutate_input():
 
 def test_fingerprint_changes_with_config():
     assert load_config("base.yaml").fingerprint() != load_config("base.yaml", ["seed=1"]).fingerprint()
+
+
+def test_yaml12_booleans_no_is_a_string():
+    cfg = load_config("base.yaml", ["train.eval_strategy=no", "train.bf16=false"])
+    assert cfg.train.eval_strategy == "no" and cfg.train.bf16 is False
+
+
+def test_grad_accum_derived():
+    cfg = load_config("llama2_7b_qlora.yaml")
+    assert cfg.train.grad_accum * cfg.train.per_device_train_batch_size == 32

@@ -4,13 +4,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qlora_pipeline.paths import configs_dir
+
+
+class _Yaml12Loader(yaml.SafeLoader):
+    """SafeLoader with YAML 1.2 booleans: only true/false. YAML 1.1 would turn `no`/`yes`/`on`/`off` into bools,
+    which breaks values like `eval_strategy: no`."""
+
+
+_Yaml12Loader.yaml_implicit_resolvers = {
+    k: [(tag, rx) for tag, rx in v if tag != "tag:yaml.org,2002:bool"]
+    for k, v in yaml.SafeLoader.yaml_implicit_resolvers.copy().items()
+}
+_Yaml12Loader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF")
+)
+
+
+def _yaml_load(text: str) -> Any:
+    return yaml.load(text, Loader=_Yaml12Loader)  # noqa: S506 - SafeLoader subclass
 
 
 class _Strict(BaseModel):
@@ -59,11 +78,68 @@ class DataCfg(_Strict):
     processed_name: str = "bitext_cs"
 
 
+class QuantCfg(_Strict):
+    load_in_4bit: bool = True
+    bnb_4bit_quant_type: Literal["nf4", "fp4"] = "nf4"
+    bnb_4bit_use_double_quant: bool = True
+    bnb_4bit_compute_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
+
+
+class LoraCfg(_Strict):
+    r: int = Field(16, gt=0)
+    lora_alpha: int = 32
+    lora_dropout: float = Field(0.05, ge=0, lt=1)
+    bias: Literal["none", "all", "lora_only"] = "none"
+    target_modules: list[str] = Field(
+        default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    )
+
+
+class TrainCfg(_Strict):
+    output_name: str = "llama2-7b-qlora"   # runs/<name>/ checkpoints, artifacts/adapters/<name>/ best adapter
+    num_train_epochs: float = 3
+    max_steps: int = -1                    # > 0 overrides epochs (smoke test)
+    per_device_train_batch_size: int = Field(4, gt=0)
+    per_device_eval_batch_size: int = Field(4, gt=0)
+    effective_batch_size: int = Field(32, gt=0)  # grad accumulation = effective / per_device
+    learning_rate: float = 2e-4
+    lr_scheduler_type: str = "cosine"
+    warmup_ratio: float = Field(0.03, ge=0, lt=1)
+    max_grad_norm: float = 0.3
+    weight_decay: float = 0.0
+    optim: str = "paged_adamw_8bit"
+    bf16: bool = True
+    gradient_checkpointing: bool = True
+    eval_strategy: Literal["epoch", "steps", "no"] = "epoch"
+    eval_steps: int | None = None
+    save_steps: int = Field(50, gt=0)      # periodic checkpoints for resume (laptop throttling)
+    save_total_limit: int = Field(2, gt=0)
+    logging_steps: int = Field(5, gt=0)
+    dataloader_num_workers: int = Field(0, ge=0)
+    pad_to_multiple_of: int | None = 8
+    resume: str = "auto"                   # auto | none | <checkpoint path>
+    telemetry_interval_s: float = 2.0      # NVML sampling period
+
+    @model_validator(mode="after")
+    def _accum_divides(self) -> TrainCfg:
+        if self.effective_batch_size % self.per_device_train_batch_size:
+            raise ValueError("effective_batch_size must be a multiple of per_device_train_batch_size")
+        return self
+
+    @property
+    def grad_accum(self) -> int:
+        return self.effective_batch_size // self.per_device_train_batch_size
+
+
 class Config(_Strict):
     experiment: str
     seed: int = 42
+    method: Literal["qlora", "lora", "full"] = "qlora"
     model: ModelCfg
     data: DataCfg
+    quant: QuantCfg = Field(default_factory=QuantCfg)
+    lora: LoraCfg = Field(default_factory=LoraCfg)
+    train: TrainCfg = Field(default_factory=TrainCfg)
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -88,7 +164,7 @@ def _load_yaml_chain(path: Path, seen: set[Path] | None = None) -> dict:
     if path in seen:
         raise ValueError(f"circular `extends` at {path}")
     seen.add(path)
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw = _yaml_load(path.read_text(encoding="utf-8")) or {}
     parent = raw.pop("extends", None)
     if parent:
         return _deep_merge(_load_yaml_chain(path.parent / parent, seen), raw)
@@ -99,7 +175,7 @@ def parse_override(item: str) -> tuple[list[str], Any]:
     if "=" not in item:
         raise ValueError(f"override must be key.path=value, got {item!r}")
     key, val = item.split("=", 1)
-    return key.strip().split("."), yaml.safe_load(val)  # YAML typing: 6000 -> int, true -> bool, [a,b] -> list
+    return key.strip().split("."), _yaml_load(val)  # YAML 1.2 typing: 6000 -> int, true -> bool, [a,b] -> list
 
 
 def apply_overrides(d: dict, overrides: list[str]) -> dict:
