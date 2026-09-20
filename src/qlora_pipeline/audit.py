@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,71 @@ LOCATIONS: list[tuple[str, str, str]] = [
 # Shared with every other app on the machine (browsers, Windows, Claude), so growth there is
 # reported as WARN and does not fail the audit. All other locations are hard fails.
 WARN_ONLY = {r"%LOCALAPPDATA%\Temp"}
+
+# The system-managed pagefile on C: grows when GPU jobs push Windows commit charge past its limit. It is not a
+# project file, so it is WARN-only, but it is real C: consumption caused by our workload.
+PAGEFILE_LABEL = r"C:\pagefile.sys (allocated)"
+
+
+def pagefile_mb() -> int | None:
+    """Allocated size of the pagefile(s) on the system drive, via CIM (no admin needed). None if unavailable."""
+    drive = os.environ.get("SystemDrive", "C:")
+    cmd = (f"(Get-CimInstance Win32_PageFileUsage | Where-Object {{ $_.Name -like '{drive}*' }} | "
+           "Measure-Object AllocatedBaseSize -Sum).Sum")  # fmt: skip
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+                           capture_output=True, text=True, timeout=60)  # fmt: skip
+        out = r.stdout.strip()
+        if r.returncode != 0 or (not out and r.stderr.strip()):
+            return None
+        return int(float(out)) if out else 0  # empty + clean exit = no pagefile on this drive
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def commit_stats() -> dict[str, float]:
+    """System-wide commit charge (GB) from GetPerformanceInfo; empty off Windows."""
+    if os.name != "nt":
+        return {}
+    import ctypes
+    from ctypes import wintypes
+
+    class PERFORMANCE_INFORMATION(ctypes.Structure):  # noqa: N801
+        _fields_ = [("cb", wintypes.DWORD), ("CommitTotal", ctypes.c_size_t), ("CommitLimit", ctypes.c_size_t),
+                    ("CommitPeak", ctypes.c_size_t), ("PhysicalTotal", ctypes.c_size_t),
+                    ("PhysicalAvailable", ctypes.c_size_t), ("SystemCache", ctypes.c_size_t),
+                    ("KernelTotal", ctypes.c_size_t), ("KernelPaged", ctypes.c_size_t),
+                    ("KernelNonpaged", ctypes.c_size_t), ("PageSize", ctypes.c_size_t),
+                    ("HandleCount", wintypes.DWORD), ("ProcessCount", wintypes.DWORD),
+                    ("ThreadCount", wintypes.DWORD)]  # fmt: skip
+
+    pi = PERFORMANCE_INFORMATION()
+    pi.cb = ctypes.sizeof(pi)
+    if not ctypes.windll.psapi.GetPerformanceInfo(ctypes.byref(pi), pi.cb):
+        return {}
+    g = pi.PageSize / 1024**3
+    return {"commit_total_gb": round(pi.CommitTotal * g, 2), "commit_limit_gb": round(pi.CommitLimit * g, 2),
+            "commit_peak_gb": round(pi.CommitPeak * g, 2), "physical_total_gb": round(pi.PhysicalTotal * g, 2),
+            "physical_available_gb": round(pi.PhysicalAvailable * g, 2)}  # fmt: skip
+
+
+def c_free_gb() -> float:
+    return shutil.disk_usage(os.environ.get("SystemDrive", "C:") + "\\").free / 1024**3
+
+
+class LowDiskError(RuntimeError):
+    pass
+
+
+def require_c_free(min_gb: float, what: str) -> float:
+    """Pre-flight guard: refuse to start `what` if the system drive is below `min_gb` free."""
+    free = c_free_gb()
+    if free < min_gb:
+        raise LowDiskError(
+            f"Refusing to start {what}: C: has {free:.1f} GB free, below the {min_gb:.0f} GB pre-flight minimum. "
+            r"Large GPU jobs can grow C:\pagefile.sys by 20+ GB. Free space on C: or move the pagefile to G:."
+        )
+    return free
 
 
 def _dir_size(path: Path) -> int:
@@ -82,6 +148,8 @@ def snapshot() -> dict:
         "drive": sys_drive,
         "free_bytes": usage.free,
         "locations": locs,
+        "pagefile_mb": pagefile_mb(),
+        "commit": commit_stats(),
     }
 
 
@@ -118,7 +186,17 @@ def compare(threshold_mb: float = THRESHOLD_MB) -> tuple[bool, list[dict], dict]
             status = "FAIL"
         ok &= status != "FAIL"
         rows.append({"location": label, "baseline_mb": b / MB, "now_mb": n / MB, "delta_mb": delta_mb, "status": status})
+    pf_base, pf_src = base.get("pagefile_mb"), "c_baseline.json"
+    if pf_base is None and (logs_dir() / "c_pagefile_baseline.json").exists():
+        pfb = json.loads((logs_dir() / "c_pagefile_baseline.json").read_text(encoding="utf-8"))
+        pf_base, pf_src = pfb["pagefile_mb"], f"c_pagefile_baseline.json ({pfb.get('source', '')})"
+    pf_now = now.get("pagefile_mb")
+    if pf_base is not None and pf_now is not None:
+        d = pf_now - pf_base
+        rows.append({"location": PAGEFILE_LABEL, "baseline_mb": float(pf_base), "now_mb": float(pf_now),
+                     "delta_mb": float(d), "status": "WARN" if d > threshold_mb else "ok"})  # fmt: skip
     report = {
+        "pagefile_baseline_source": pf_src if pf_base is not None else None,
         "baseline_taken_at": base["taken_at"],
         "now": now,
         "free_delta_mb": (now["free_bytes"] - base["free_bytes"]) / MB,
@@ -138,6 +216,12 @@ def print_report(rows: list[dict], report: dict) -> None:
         print(f"{r['location']:38} {r['baseline_mb']:12.1f} {r['now_mb']:10.1f} {r['delta_mb']:+10.1f}  {r['status']}")
     free_gb = report["now"]["free_bytes"] / 1024**3
     print(f"C: free now {free_gb:.2f} GB (change since baseline {report['free_delta_mb']:+.1f} MB, informational)")
+    if report.get("pagefile_baseline_source"):
+        print(f"pagefile baseline from {report['pagefile_baseline_source']}; pagefile rows are WARN-only")
+    cm = report["now"].get("commit") or {}
+    if cm:
+        print(f"commit charge now {cm['commit_total_gb']} / {cm['commit_limit_gb']} GB limit "
+              f"(RAM {cm['physical_total_gb']} GB), informational")
     print("RESULT:", "PASS" if report["passed"] else "FAIL")
 
 
@@ -152,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Baseline written to {baseline_path()}")
         for label, v in snap["locations"].items():
             print(f"  {label:38} {v['bytes'] / MB:10.1f} MB  {'(missing)' if not v['exists'] else ''}")
-        print(f"  C: free {snap['free_bytes'] / 1024**3:.2f} GB")
+        print(f"  C: free {snap['free_bytes'] / 1024**3:.2f} GB; pagefile {snap['pagefile_mb']} MB")
         return 0
     ok, rows, report = compare(a.threshold_mb)
     print_report(rows, report)

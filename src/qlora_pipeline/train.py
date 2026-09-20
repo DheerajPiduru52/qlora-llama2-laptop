@@ -113,8 +113,9 @@ def run_train(cfg: Config, stage: str = "train") -> dict[str, Any]:
     from trl import SFTConfig, SFTTrainer
     from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
 
-    from qlora_pipeline.model import build_for_training, param_counts, save_adapter_or_model
+    from qlora_pipeline.model import build_for_training, param_counts, preflight, save_adapter_or_model
 
+    preflight(cfg, f"{stage} {cfg.train.output_name}")
     telemetry.require_mlflow()
     dataset_hash = verify_dataset(cfg)
     set_seed(cfg.seed)

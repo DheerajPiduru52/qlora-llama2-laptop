@@ -25,6 +25,35 @@ def model_path(model_cfg: ModelCfg) -> Path:
     return Path(snapshot_download(model_cfg.name, revision=model_cfg.revision, allow_patterns=model_cfg.allow_patterns))
 
 
+def estimate_params_b(model_cfg: ModelCfg) -> float | None:
+    """Dense decoder parameter estimate (billions) from config.json; None if the config is not understood."""
+    import json
+
+    try:
+        c = json.loads((model_path(model_cfg) / "config.json").read_text(encoding="utf-8"))
+        c = c.get("text_config", c)
+        h, inter, layers, vocab = c["hidden_size"], c["intermediate_size"], c["num_hidden_layers"], c["vocab_size"]
+        heads = c["num_attention_heads"]
+        head_dim = c.get("head_dim") or h // heads
+        q, kv = heads * head_dim, c.get("num_key_value_heads", heads) * head_dim
+        per_layer = h * q + q * h + 2 * h * kv + 3 * h * inter * max(1, c.get("num_local_experts", 1))
+        emb = vocab * h * (1 if c.get("tie_word_embeddings") else 2)
+        return (layers * per_layer + emb) / 1e9
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def preflight(cfg: Config, what: str) -> None:
+    """Refuse to start a large-model GPU job when C: is low (pagefile growth can take 20+ GB of C:)."""
+    from qlora_pipeline.audit import require_c_free
+
+    est = estimate_params_b(cfg.model)
+    if est is None or est >= cfg.safety.large_model_min_params_b:  # unknown size -> treat as large (safe side)
+        est = est if est is not None else float("nan")
+        free = require_c_free(cfg.safety.min_c_free_gb, f"{what} ({cfg.model.name}, ~{est:.1f}B params)")
+        print(f"pre-flight OK: {what}, ~{est:.1f}B params, C: {free:.1f} GB free >= {cfg.safety.min_c_free_gb:.0f} GB")
+
+
 def bnb_config(cfg: Config):
     from transformers import BitsAndBytesConfig
 

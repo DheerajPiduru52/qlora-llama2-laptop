@@ -165,6 +165,7 @@ def score_variant(model, tok, cfg: Config, test_rows, val_rows, gen_cfg, do_lm_e
     torch.cuda.reset_peak_memory_stats()
     gens = generate(model, tok, cfg, test_rows, gen_cfg)
     t_gen = time.time() - t0
+    torch.cuda.empty_cache()  # on Windows/WDDM reserved VRAM is charged to commit; release between stages
     preds = [g["pred"] for g in gens]
     refs = [r["output"] for r in test_rows]
     res: dict[str, Any] = {
@@ -178,7 +179,9 @@ def score_variant(model, tok, cfg: Config, test_rows, val_rows, gen_cfg, do_lm_e
         "mean_gen_tokens": round(sum(g["gen_tokens"] for g in gens) / len(gens), 1),
     }
     res["val_perplexity"] = perplexity(model, tok, cfg, val_rows)
+    torch.cuda.empty_cache()
     res["lm_eval"] = lm_eval_regression(model, tok, cfg) if do_lm_eval else {}
+    torch.cuda.empty_cache()
     res["peak_mem_reserved_gb"] = round(torch.cuda.max_memory_reserved() / GB, 3)
     return res
 
@@ -284,8 +287,9 @@ def forgetting_verdict(cfg: Config, v: dict[str, dict]) -> dict[str, Any]:
 def run_eval(cfg: Config, do_lm_eval: bool = True, tag: str | None = None) -> dict[str, Any]:
     import mlflow
 
-    from qlora_pipeline.model import is_adapter_dir, load_for_inference
+    from qlora_pipeline.model import is_adapter_dir, load_for_inference, preflight
 
+    preflight(cfg, f"eval {tag or cfg.train.output_name}")
     telemetry.require_mlflow()
     weights = resolve_weights(cfg)
     name = tag or cfg.train.output_name
