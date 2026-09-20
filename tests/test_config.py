@@ -58,3 +58,9 @@ def test_yaml12_booleans_no_is_a_string():
 def test_grad_accum_derived():
     cfg = load_config("llama2_7b_qlora.yaml")
     assert cfg.train.grad_accum * cfg.train.per_device_train_batch_size == 32
+
+
+def test_eval_quantized_accepts_bool_and_auto():
+    assert load_config("base.yaml", ["eval.quantized=true"]).eval.quantized is True
+    assert load_config("base.yaml", ["eval.quantized=false"]).eval.quantized is False
+    assert load_config("base.yaml").eval.quantized == "auto"

@@ -183,7 +183,7 @@ def merge_cmd(
     from qlora_pipeline.config import load_config
     from qlora_pipeline.merge import run_merge
 
-    s = run_merge(load_config(config, set_), config, skip_merge_if_present=not force)
+    s = run_merge(load_config(config, set_), config, skip_merge_if_present=not force, overrides=set_)
     v = s["validation"]
     typer.echo(f"merged: {s['merged_dir']}  (peak commit {s['merge_info']['process_peak_commit_gb']} GB)")
     typer.echo(f"validation n={v['n']}: merged {v['rougeL_merged']:.2f} vs adapter {v['rougeL_adapter']:.2f} "

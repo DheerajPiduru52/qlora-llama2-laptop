@@ -133,7 +133,7 @@ class TrainCfg(_Strict):
 
 class EvalCfg(_Strict):
     weights: str | None = None            # adapter or full-model dir; null -> artifacts/adapters/<train.output_name>
-    quantized: Literal["auto", "true", "false"] = "auto"  # auto: 4-bit iff method == qlora (as trained)
+    quantized: bool | Literal["auto"] = "auto"  # auto: 4-bit iff method == qlora (as trained)
     max_new_tokens: int = Field(512, gt=0)
     gen_batch_size: int = Field(8, gt=0)   # 16 fragmented the KV-cache allocator past 16 GB VRAM (probe 2026-11-19)
     ppl_batch_size: int = Field(8, gt=0)

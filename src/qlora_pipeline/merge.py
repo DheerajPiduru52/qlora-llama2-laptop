@@ -35,6 +35,24 @@ def _dir_sha(d: Path) -> str:
     return h.hexdigest()
 
 
+def reusable_merge(cfg: Config, adapter: Path, out: Path) -> tuple[bool, str]:
+    """Reuse only a complete merge of the same adapter, base revision and dtype."""
+    mi, idx = out / "merge_info.json", out / "model.safetensors.index.json"
+    if not mi.exists() or not idx.exists():
+        return False, "no complete merge"
+    info = json.loads(mi.read_text(encoding="utf-8"))
+    shards = set(json.loads(idx.read_text(encoding="utf-8"))["weight_map"].values())
+    checks = {
+        "adapter": info.get("adapter_sha256") == _dir_sha(adapter),
+        "base": (info.get("base_model"), info.get("base_revision")) == (cfg.model.name, cfg.model.revision),
+        "dtype": info.get("dtype") == cfg.merge.dtype,
+        "shards": all((out / s).exists() for s in shards),
+    }
+    bad = [k for k, ok in checks.items() if not ok]
+    return (not bad), ("same adapter, base revision and dtype; all shards present" if not bad
+                       else f"stale ({', '.join(bad)})")  # fmt: skip
+
+
 def merge_to_disk(cfg: Config, adapter: Path, out: Path) -> dict[str, Any]:
     import torch
     from peft import PeftModel
@@ -61,9 +79,14 @@ def merge_to_disk(cfg: Config, adapter: Path, out: Path) -> dict[str, Any]:
     if leftover:
         raise RuntimeError(f"LoRA modules left after merge: {leftover[:5]}")
     merged.config.use_cache = True
-    ensure_dir(out)
-    merged.save_pretrained(out, safe_serialization=True, max_shard_size="5GB")
-    tok.save_pretrained(out)
+    import shutil
+
+    tmp = out.with_name(out.name + ".tmp")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    ensure_dir(tmp)
+    merged.save_pretrained(tmp, safe_serialization=True, max_shard_size="5GB")
+    tok.save_pretrained(tmp)
     t_save = time.time() - t0 - t_load - t_merge
     info = {
         "base_model": cfg.model.name, "base_revision": cfg.model.revision, "dtype": cfg.merge.dtype, "device": "cpu",
@@ -72,18 +95,23 @@ def merge_to_disk(cfg: Config, adapter: Path, out: Path) -> dict[str, Any]:
         "load_s": round(t_load, 1), "merge_s": round(t_merge, 1), "save_s": round(t_save, 1),
         "process_peak_commit_gb": round(process_commit_gb().get("peak_private_gb", float("nan")), 2),
         "git_sha": telemetry.git_sha(),
-        "files": {f.name: f.stat().st_size for f in sorted(out.iterdir()) if f.is_file()},
+        "files": {f.name: f.stat().st_size for f in sorted(tmp.iterdir()) if f.is_file()},
     }  # fmt: skip
-    (out / "merge_info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+    (tmp / "merge_info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+    if out.exists():  # replace an older merge only after the new one is fully written (no stale shards)
+        shutil.rmtree(out)
+    tmp.rename(out)
     del merged, model, base
     gc.collect()
     return info
 
 
-def _validate(cfg_name: str, tag: str, weights: Path, n: int, log: Path) -> dict[str, Any]:
+def _validate(cfg_name: str, tag: str, weights: Path, n: int, log: Path, overrides: list[str]) -> dict[str, Any]:
     cmd = [sys.executable, "-m", "qlora_pipeline.cli", "eval", "-c", cfg_name, "--tag", tag, "--skip-lm-eval",
-           "--no-record-peak", "--set", "eval.compare_base=false", "--set", f"eval.test_limit={n}",
-           "--set", f"eval.weights={weights.as_posix()}", "--set", "eval.quantized=true"]  # fmt: skip
+           "--no-record-peak"]  # fmt: skip
+    for o in [*overrides, "eval.compare_base=false", f"eval.test_limit={n}", "eval.test_select=first",
+              f"eval.weights={weights.as_posix()}", "eval.quantized=true"]:  # fmt: skip
+        cmd += ["--set", o]
     print("running:", " ".join(cmd[3:]), f"(log: {log})", flush=True)
     with log.open("w", encoding="utf-8") as f:
         rc = subprocess.call(cmd, stdout=f, stderr=subprocess.STDOUT)
@@ -105,7 +133,8 @@ def _agreement(tag_a: str, tag_b: str) -> dict[str, float]:
             "mean_abs_row_rouge_diff": round(diff, 2)}  # fmt: skip
 
 
-def run_merge(cfg: Config, cfg_name: str, skip_merge_if_present: bool = True) -> dict[str, Any]:
+def run_merge(cfg: Config, cfg_name: str, skip_merge_if_present: bool = True,
+              overrides: list[str] | None = None) -> dict[str, Any]:  # fmt: skip
     import mlflow
 
     from qlora_pipeline.evaluate import resolve_weights
@@ -116,13 +145,15 @@ def run_merge(cfg: Config, cfg_name: str, skip_merge_if_present: bool = True) ->
     out = merged_dir() / name
     logs = ensure_dir(logs_dir())
     telemetry.require_mlflow()
+    train_run = (runs_dir() / name / "mlflow_run_id.txt").read_text(encoding="utf-8").strip()
+    dataset_hash = json.loads((runs_dir() / name / "summary.json").read_text(encoding="utf-8"))["dataset_hash"]
 
-    existing = out / "merge_info.json"
-    if skip_merge_if_present and existing.exists() and json.loads(existing.read_text(encoding="utf-8")).get(
-        "adapter_sha256") == _dir_sha(adapter):  # fmt: skip
-        info = json.loads(existing.read_text(encoding="utf-8"))
-        print(f"merge: reusing {out} (same adapter sha256)", flush=True)
+    reuse, why = reusable_merge(cfg, adapter, out) if skip_merge_if_present else (False, "--force")
+    if reuse:
+        info = json.loads((out / "merge_info.json").read_text(encoding="utf-8"))
+        print(f"merge: REUSING {out} ({why})", flush=True)
     else:
+        print(f"merge: merging ({why})", flush=True)
         preflight(cfg, f"merge {name} (CPU, {cfg.merge.dtype})", job="merge")
         info = merge_to_disk(cfg, adapter, out)
         record_peak(cfg, "merge", f"CPU {cfg.merge.dtype} merge {name}")
@@ -130,8 +161,9 @@ def run_merge(cfg: Config, cfg_name: str, skip_merge_if_present: bool = True) ->
               f"process peak commit {info['process_peak_commit_gb']} GB)", flush=True)  # fmt: skip
 
     n = cfg.merge.validate_n
-    v_adapter = _validate(cfg_name, f"merge-validate-adapter-{name}", adapter, n, logs / "merge_validate_adapter.log")
-    v_merged = _validate(cfg_name, f"merge-validate-merged-{name}", out, n, logs / "merge_validate_merged.log")
+    ov = list(overrides or [])
+    v_adapter = _validate(cfg_name, f"merge-validate-adapter-{name}", adapter, n, logs / "merge_validate_adapter.log", ov)
+    v_merged = _validate(cfg_name, f"merge-validate-merged-{name}", out, n, logs / "merge_validate_merged.log", ov)
     r_a, r_m = v_adapter["tuned"]["rougeL"], v_merged["tuned"]["rougeL"]
     delta = r_m - r_a
     ok = abs(delta) <= cfg.merge.rouge_tolerance
@@ -139,11 +171,15 @@ def run_merge(cfg: Config, cfg_name: str, skip_merge_if_present: bool = True) ->
     validation = {"n": n, "rougeL_adapter": r_a, "rougeL_merged": r_m, "delta": round(delta, 3),
                   "tolerance": cfg.merge.rouge_tolerance, "pass": ok, **agree,
                   "merged_loaded_as": "4-bit NF4 (fp16 merge does not fit the 14 GB VRAM cap with a KV cache)",
-                  "adapter_loaded_as": "4-bit NF4 base + LoRA adapter (as trained)"}  # fmt: skip
+                  "adapter_loaded_as": "4-bit NF4 base + LoRA adapter (as trained)",
+                  "method_note": ("Merge fidelity checked via NF4 re-quantization of the fp16 merge; the fp16 merged "
+                                  "model was not run end-to-end (13.5 GB weights exceed the 14 GB VRAM cap once a "
+                                  "KV cache is added; CPU generation of 50 replies is impractical). The delta mixes "
+                                  "merge error with re-quantization error, and n=50 makes ROUGE-L noisy."),
+                  "reused_merge": reuse}  # fmt: skip
     print(f"validation: ROUGE-L merged {r_m:.2f} vs adapter {r_a:.2f} -> delta {delta:+.2f} "
           f"(tolerance ±{cfg.merge.rouge_tolerance}) {'PASS' if ok else 'FAIL'}; {agree}", flush=True)  # fmt: skip
 
-    train_run = (runs_dir() / name / "mlflow_run_id.txt").read_text(encoding="utf-8").strip()
     registered: dict[str, Any] = {}
     with telemetry.start_run(cfg, f"merge-{name}", {"stage": "merge", "train_run_id": train_run,
                                                     "merged_path": str(out)}) as run:  # fmt: skip
@@ -168,8 +204,9 @@ def run_merge(cfg: Config, cfg_name: str, skip_merge_if_present: bool = True) ->
                     raise
             src = f"{run.info.artifact_uri}/adapter"
             tags = {"merged_path": str(out), "base_model": cfg.model.name, "base_revision": cfg.model.revision,
-                    "adapter_sha256": info["adapter_sha256"], "dataset_hash": json.loads((runs_dir() / name /
-                    "summary.json").read_text(encoding="utf-8"))["dataset_hash"], "train_run_id": train_run,
+                    "adapter_sha256": info["adapter_sha256"], "dataset_hash": dataset_hash, "train_run_id": train_run,
+                    "validation_method": "merged model re-quantized to NF4 vs NF4 base + adapter, 50 test rows",
+                    "reused_merge": str(reuse),
                     "merge_run_id": run_id, "git_sha": telemetry.git_sha(),
                     "validation_rougeL_delta": f"{delta:+.3f}", "quantization_at_serve": "nf4 4-bit"}  # fmt: skip
             mv = client.create_model_version(cfg.merge.registry_name, source=src, run_id=run_id, tags=tags,

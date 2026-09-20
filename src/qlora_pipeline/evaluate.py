@@ -342,7 +342,7 @@ def run_eval(cfg: Config, do_lm_eval: bool = True, tag: str | None = None, recor
     telemetry.require_mlflow()
     weights = resolve_weights(cfg)
     name = tag or cfg.train.output_name
-    quantized = cfg.method == "qlora" if cfg.eval.quantized == "auto" else cfg.eval.quantized == "true"
+    quantized = cfg.method == "qlora" if cfg.eval.quantized == "auto" else bool(cfg.eval.quantized)
     tok = load_tokenizer(cfg.model, padding_side="left")
     test_rows = load_split(cfg, "test")
     if cfg.eval.test_limit:
