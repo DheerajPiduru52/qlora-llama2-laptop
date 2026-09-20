@@ -165,7 +165,8 @@ def bench_cmd(force: bool = typer.Option(False, help="Retrain/re-evaluate even i
     out = run_bench(force=force)
     typer.echo(f"QLoRA peak-allocated reduction: vs LoRA {out['reductions']['alloc_vs_lora']}%, "
                f"vs full FT {out['reductions']['alloc_vs_full']}% -> memory claim "
-               f"{'HELD' if out['memory_claim_held'] else 'DID NOT HOLD'}")
+               f"{'HELD' if out['memory_claim_held'] else 'DID NOT HOLD'} (allocated); reserved: "
+               f"{'HELD' if out['reserved_claim_held'] else 'DID NOT HOLD'}")
     p = out["parity"]
     typer.echo(f"ROUGE-L QLoRA - full FT = {p['delta']:+.2f} (tolerance ±{p['tolerance']}): "
                f"{'PASS' if p['pass'] else 'FAIL'}")
