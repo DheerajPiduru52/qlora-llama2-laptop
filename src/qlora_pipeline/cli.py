@@ -173,6 +173,26 @@ def bench_cmd(force: bool = typer.Option(False, help="Retrain/re-evaluate even i
     typer.echo(f"report: {out['report']}   mlflow run {out['mlflow_run_id']}")
 
 
+@app.command("merge")
+def merge_cmd(
+    config: str = typer.Option("llama2_7b_qlora.yaml", "--config", "-c"),
+    set_: list[str] = SetOpt,
+    force: bool = typer.Option(False, help="Re-merge even if a merge of the same adapter exists"),
+) -> None:
+    """Phase 5: fp16 CPU merge -> validate (ROUGE-L merged vs adapter) -> MLflow registry alias."""
+    from qlora_pipeline.config import load_config
+    from qlora_pipeline.merge import run_merge
+
+    s = run_merge(load_config(config, set_), config, skip_merge_if_present=not force)
+    v = s["validation"]
+    typer.echo(f"merged: {s['merged_dir']}  (peak commit {s['merge_info']['process_peak_commit_gb']} GB)")
+    typer.echo(f"validation n={v['n']}: merged {v['rougeL_merged']:.2f} vs adapter {v['rougeL_adapter']:.2f} "
+               f"delta {v['delta']:+.2f} -> {'PASS' if v['pass'] else 'FAIL'}; identical outputs "
+               f"{v['identical_outputs_pct']}%")
+    typer.echo(f"registered: {s['registered'] or 'NOT registered (validation failed)'}   mlflow run {s['mlflow_run_id']}")
+    raise typer.Exit(0 if v["pass"] else 1)
+
+
 def _later(phase: int):
     def _stub() -> None:
         typer.echo(f"Not implemented yet: arrives in Phase {phase}.")
@@ -183,7 +203,7 @@ def _later(phase: int):
 
 for _name, _phase in [
 
-    ("merge", 5), ("serve", 6), ("chat", 6), ("load-test", 6),
+    ("serve", 6), ("chat", 6), ("load-test", 6),
 ]:  # fmt: skip
     app.command(_name, help=f"(Phase {_phase})")(_later(_phase))
 

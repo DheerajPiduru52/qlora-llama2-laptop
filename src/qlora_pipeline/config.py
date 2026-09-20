@@ -149,6 +149,14 @@ class EvalCfg(_Strict):
     forgetting_tolerance: float = 2.0     # flag if tuned acc drops more than this (points) vs base
 
 
+class MergeCfg(_Strict):
+    dtype: Literal["float16", "bfloat16"] = "float16"   # spec: fp16 merge on CPU (Llama 2 ships fp16 weights)
+    validate_n: int = Field(50, gt=0)                   # first N test rows, greedy, merged vs adapter
+    rouge_tolerance: float = 0.5                         # |ROUGE-L merged - adapter| must be <= this
+    registry_name: str = "qlora-cs-llama2-7b-chat"
+    alias: str = "champion"
+
+
 class SafetyCfg(_Strict):
     min_c_free_gb: float = 15.0             # pre-flight: refuse large-model GPU jobs below this C: free space
     large_model_min_params_b: float = 3.0   # "large" = estimated params >= this (billions); 7B is large, 1.1B is not
@@ -167,6 +175,7 @@ class Config(_Strict):
     train: TrainCfg = Field(default_factory=TrainCfg)
     eval: EvalCfg = Field(default_factory=EvalCfg)
     safety: SafetyCfg = Field(default_factory=SafetyCfg)
+    merge: MergeCfg = Field(default_factory=MergeCfg)
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
