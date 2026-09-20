@@ -248,7 +248,10 @@ def run_train(cfg: Config, stage: str = "train") -> dict[str, Any]:
         mlflow.log_metrics({k: float(v) for k, v in summary.items()
                             if isinstance(v, int | float) and not isinstance(v, bool)})  # fmt: skip
         mlflow.log_dict(summary, "summary.json")
-        mlflow.log_artifacts(str(best_dir), artifact_path="adapter")
+        if cfg.method == "full":  # full weights (GBs) stay on disk; MLflow records where
+            mlflow.set_tag("weights_dir", str(best_dir))
+        else:
+            mlflow.log_artifacts(str(best_dir), artifact_path="adapter")
         return summary
     finally:
         monitor.stop()

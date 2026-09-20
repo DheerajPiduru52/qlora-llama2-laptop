@@ -1,0 +1,11 @@
+# Phase 4 proxy: full fine-tuning (bf16 weights, paged 8-bit AdamW, gradient checkpointing).
+# Identical to proxy_qlora.yaml in model, data, prompt template, seq length, effective batch, steps (1 epoch)
+# and seed. Learning rate differs on purpose: 2e-4 is the LoRA/QLoRA default and would wreck a full fine-tune;
+# 2e-5 is the conventional full-FT rate. The benchmark report states this.
+extends: proxy_qlora.yaml
+method: full
+
+train:
+  output_name: proxy-full
+  learning_rate: 2.0e-5
+  save_total_limit: 1    # full-model checkpoints are ~4.5 GB each (weights + 8-bit optimizer state)

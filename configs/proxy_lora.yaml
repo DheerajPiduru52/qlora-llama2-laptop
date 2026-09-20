@@ -1,0 +1,7 @@
+# Phase 4 proxy: bf16 LoRA (no quantization). Identical to proxy_qlora.yaml in model, data, prompt
+# template, seq length, effective batch, steps (1 epoch), seed, LoRA r/alpha/targets and learning rate.
+extends: proxy_qlora.yaml
+method: lora
+
+train:
+  output_name: proxy-lora

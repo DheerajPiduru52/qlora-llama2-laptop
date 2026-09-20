@@ -157,6 +157,21 @@ def eval_cmd(
                        f"{m['peak_allocated_gb']:6.2f} GB{'  OOM' if m['oom'] else ''}")
 
 
+@app.command("bench")
+def bench_cmd(force: bool = typer.Option(False, help="Retrain/re-evaluate even if completed runs exist")) -> None:
+    """Phase 4: proxy full FT vs bf16 LoRA vs QLoRA (memory, speed, ROUGE-L parity) + 7B estimates."""
+    from qlora_pipeline.benchmark import run_bench
+
+    out = run_bench(force=force)
+    typer.echo(f"QLoRA peak-allocated reduction: vs LoRA {out['reductions']['alloc_vs_lora']}%, "
+               f"vs full FT {out['reductions']['alloc_vs_full']}% -> memory claim "
+               f"{'HELD' if out['memory_claim_held'] else 'DID NOT HOLD'}")
+    p = out["parity"]
+    typer.echo(f"ROUGE-L QLoRA - full FT = {p['delta']:+.2f} (tolerance ±{p['tolerance']}): "
+               f"{'PASS' if p['pass'] else 'FAIL'}")
+    typer.echo(f"report: {out['report']}   mlflow run {out['mlflow_run_id']}")
+
+
 def _later(phase: int):
     def _stub() -> None:
         typer.echo(f"Not implemented yet: arrives in Phase {phase}.")
@@ -166,7 +181,7 @@ def _later(phase: int):
 
 
 for _name, _phase in [
-    ("bench", 4),
+
     ("merge", 5), ("serve", 6), ("chat", 6), ("load-test", 6),
 ]:  # fmt: skip
     app.command(_name, help=f"(Phase {_phase})")(_later(_phase))
