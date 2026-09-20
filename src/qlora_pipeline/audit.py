@@ -85,6 +85,100 @@ def commit_stats() -> dict[str, float]:
             "physical_available_gb": round(pi.PhysicalAvailable * g, 2)}  # fmt: skip
 
 
+def process_commit_gb() -> dict[str, float]:
+    """This process's private commit now and its lifetime peak (GB), via K32GetProcessMemoryInfo."""
+    if os.name != "nt":
+        return {}
+    import ctypes
+    from ctypes import wintypes
+
+    class PMC(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t),
+                    ("PrivateUsage", ctypes.c_size_t)]  # fmt: skip
+
+    c = PMC()
+    c.cb = ctypes.sizeof(c)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    k32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+    k32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
+    if not k32.K32GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb):
+        return {}
+    return {"private_gb": c.PrivateUsage / 1024**3, "peak_private_gb": c.PeakPagefileUsage / 1024**3}
+
+
+def top_commit_processes(n: int = 5) -> list[dict]:
+    """Top-n processes by private commit (what to close to free commit headroom)."""
+    cmd = ("Get-Process | Sort-Object PrivateMemorySize64 -Descending | Select-Object -First "
+           f"{n} Name,Id,PrivateMemorySize64 | ConvertTo-Json -Compress")  # fmt: skip
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+                           capture_output=True, text=True, timeout=60)  # fmt: skip
+        rows = json.loads(r.stdout) if r.stdout.strip() else []
+        rows = rows if isinstance(rows, list) else [rows]
+        return [{"name": x["Name"], "pid": x["Id"], "commit_gb": round(x["PrivateMemorySize64"] / 1024**3, 2)}
+                for x in rows]  # fmt: skip
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def peaks_path() -> Path:
+    return ensure_dir(logs_dir()) / "commit_peaks.json"
+
+
+def job_peak_gb(job_key: str) -> dict | None:
+    p = peaks_path()
+    if not p.exists():
+        return None
+    return json.loads(p.read_text(encoding="utf-8")).get(job_key)
+
+
+def record_job_peak(job_key: str, peak_gb: float, note: str = "") -> dict:
+    """Keep the MAX observed process peak per job (conservative), plus the latest measurement."""
+    p = peaks_path()
+    data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    prev = data.get(job_key, {})
+    now = datetime.now().isoformat(timespec="seconds")
+    entry = {
+        "peak_gb": round(max(peak_gb, prev.get("peak_gb", 0.0)), 2),
+        "latest_gb": round(peak_gb, 2), "latest_at": now, "latest_note": note,
+        "history": [*prev.get("history", []), {"gb": round(peak_gb, 2), "at": now, "note": note}][-10:],
+    }  # fmt: skip
+    data[job_key] = entry
+    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return entry
+
+
+class CommitHeadroomError(RuntimeError):
+    pass
+
+
+def require_commit_headroom(job_key: str, default_gb: float = 18.0, margin_gb: float = 3.0) -> dict:
+    """Refuse to start if (commit limit - commit in use) < (measured peak or default) + margin."""
+    cs = commit_stats()
+    if not cs:
+        return {}
+    rec = job_peak_gb(job_key)
+    basis = rec["peak_gb"] if rec else default_gb
+    src = f"measured peak {basis:.1f} GB" if rec else f"default {default_gb:.0f} GB (not yet measured)"
+    need = basis + margin_gb
+    headroom = cs["commit_limit_gb"] - cs["commit_total_gb"]
+    info = {"job": job_key, "need_gb": round(need, 2), "headroom_gb": round(headroom, 2), "basis": src, **cs}
+    if headroom < need:
+        top = top_commit_processes(5)
+        lines = "\n".join(f"    {t['commit_gb']:6.2f} GB  {t['name']} (pid {t['pid']})" for t in top)
+        raise CommitHeadroomError(
+            f"Refusing to start {job_key}: commit headroom {headroom:.1f} GB (limit {cs['commit_limit_gb']:.1f} - "
+            f"in use {cs['commit_total_gb']:.1f}) < needed {need:.1f} GB ({src} + {margin_gb:.0f} GB margin).\n"
+            f"  Top 5 processes by commit (close some to free headroom):\n{lines}"
+        )
+    return info
+
+
 def c_free_gb() -> float:
     return shutil.disk_usage(os.environ.get("SystemDrive", "C:") + "\\").free / 1024**3
 

@@ -150,7 +150,7 @@ def main() -> None:
 
     cfg = load_config(a.config, [f"eval.lm_eval_limit={a.lm_eval_limit}", f"eval.gen_batch_size={a.gen_batch}",
                                  f"eval.max_new_tokens={a.max_new_tokens}", *a.set_])  # fmt: skip
-    preflight(cfg, f"commit diagnostic ({a.label})")
+    preflight(cfg, f"commit diagnostic ({a.label})", job="eval")
     tok = load_tokenizer(cfg.model, padding_side="left")
 
     t = time.time(); s.enter("3 load 4-bit base")  # noqa: E702

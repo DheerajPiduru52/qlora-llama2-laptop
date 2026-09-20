@@ -289,7 +289,7 @@ def run_eval(cfg: Config, do_lm_eval: bool = True, tag: str | None = None) -> di
 
     from qlora_pipeline.model import is_adapter_dir, load_for_inference, preflight
 
-    preflight(cfg, f"eval {tag or cfg.train.output_name}")
+    preflight(cfg, f"eval {tag or cfg.train.output_name}", job="eval")
     telemetry.require_mlflow()
     weights = resolve_weights(cfg)
     name = tag or cfg.train.output_name
@@ -339,6 +339,9 @@ def run_eval(cfg: Config, do_lm_eval: bool = True, tag: str | None = None) -> di
             "hit_max_new_tokens_pct": r["hit_max_new_tokens_pct"], "mean_gen_tokens": r["mean_gen_tokens"],
             "peak_mem_reserved_gb": r["peak_mem_reserved_gb"],
         }  # fmt: skip
+    from qlora_pipeline.model import record_peak
+
+    summary["process_peak_commit_gb"] = record_peak(cfg, "eval", f"eval {name}")
     fv = forgetting_verdict(cfg, variants)
     summary["forgetting"], summary["forgetting_deltas"] = fv["flags"], fv["deltas"]
 

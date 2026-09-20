@@ -43,15 +43,33 @@ def estimate_params_b(model_cfg: ModelCfg) -> float | None:
         return None
 
 
-def preflight(cfg: Config, what: str) -> None:
-    """Refuse to start a large-model GPU job when C: is low (pagefile growth can take 20+ GB of C:)."""
-    from qlora_pipeline.audit import require_c_free
+def job_key(job: str, cfg: Config) -> str:
+    return f"{job}:{cfg.model.name}"
+
+
+def preflight(cfg: Config, what: str, job: str) -> None:
+    """Large-model GPU jobs only: refuse if C: is low, or if Windows commit headroom is below the job's measured
+    peak commit + margin (on WDDM, reserved VRAM is charged 1:1 to commit; the C: pagefile is capped)."""
+    from qlora_pipeline.audit import require_c_free, require_commit_headroom
 
     est = estimate_params_b(cfg.model)
     if est is None or est >= cfg.safety.large_model_min_params_b:  # unknown size -> treat as large (safe side)
-        est = est if est is not None else float("nan")
-        free = require_c_free(cfg.safety.min_c_free_gb, f"{what} ({cfg.model.name}, ~{est:.1f}B params)")
-        print(f"pre-flight OK: {what}, ~{est:.1f}B params, C: {free:.1f} GB free >= {cfg.safety.min_c_free_gb:.0f} GB")
+        label = f"~{est:.1f}B params" if est is not None else "unknown size"
+        free = require_c_free(cfg.safety.min_c_free_gb, f"{what} ({cfg.model.name}, {label})")
+        h = require_commit_headroom(job_key(job, cfg), cfg.safety.commit_default_peak_gb, cfg.safety.commit_margin_gb)
+        print(f"pre-flight OK: {what}, {label}; C: {free:.1f} GB free >= {cfg.safety.min_c_free_gb:.0f} GB; "
+              f"commit headroom {h.get('headroom_gb')} GB >= needed {h.get('need_gb')} GB ({h.get('basis')})")
+
+
+def record_peak(cfg: Config, job: str, note: str = "") -> float | None:
+    """Store this process's lifetime peak private commit for the job (feeds the next pre-flight)."""
+    from qlora_pipeline.audit import process_commit_gb, record_job_peak
+
+    pc = process_commit_gb()
+    if not pc:
+        return None
+    record_job_peak(job_key(job, cfg), pc["peak_private_gb"], note)
+    return pc["peak_private_gb"]
 
 
 def bnb_config(cfg: Config):

@@ -115,7 +115,7 @@ def run_train(cfg: Config, stage: str = "train") -> dict[str, Any]:
 
     from qlora_pipeline.model import build_for_training, param_counts, preflight, save_adapter_or_model
 
-    preflight(cfg, f"{stage} {cfg.train.output_name}")
+    preflight(cfg, f"{stage} {cfg.train.output_name}", job=f"train-{cfg.method}")
     telemetry.require_mlflow()
     dataset_hash = verify_dataset(cfg)
     set_seed(cfg.seed)
@@ -241,6 +241,9 @@ def run_train(cfg: Config, stage: str = "train") -> dict[str, Any]:
             "adapter_dir": str(best_dir), "loss_history": losses,
             **monitor.summary(),
         }  # fmt: skip
+        from qlora_pipeline.model import record_peak
+
+        summary["process_peak_commit_gb"] = record_peak(cfg, f"train-{cfg.method}", f"{stage} {tc.output_name}")
         (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         mlflow.log_metrics({k: float(v) for k, v in summary.items()
                             if isinstance(v, int | float) and not isinstance(v, bool)})  # fmt: skip

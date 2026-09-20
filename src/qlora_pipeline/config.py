@@ -149,6 +149,8 @@ class EvalCfg(_Strict):
 class SafetyCfg(_Strict):
     min_c_free_gb: float = 15.0             # pre-flight: refuse large-model GPU jobs below this C: free space
     large_model_min_params_b: float = 3.0   # "large" = estimated params >= this (billions); 7B is large, 1.1B is not
+    commit_default_peak_gb: float = 18.0    # assumed job peak commit when not yet measured
+    commit_margin_gb: float = 3.0           # headroom required on top of the job's peak
 
 
 class Config(_Strict):
