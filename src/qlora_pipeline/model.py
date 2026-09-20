@@ -58,7 +58,9 @@ def preflight(cfg: Config, what: str, job: str) -> None:
         free = require_c_free(cfg.safety.min_c_free_gb, f"{what} ({cfg.model.name}, {label})")
         h = require_commit_headroom(job_key(job, cfg), cfg.safety.commit_default_peak_gb, cfg.safety.commit_margin_gb)
         print(f"pre-flight OK: {what}, {label}; C: {free:.1f} GB free >= {cfg.safety.min_c_free_gb:.0f} GB; "
-              f"commit headroom {h.get('headroom_gb')} GB >= needed {h.get('need_gb')} GB ({h.get('basis')})")
+              f"commit headroom {h.get('headroom_gb')} GB (limit {h.get('limit_gb')} = {h.get('limit_source')}) "
+              f">= needed {h.get('need_gb')} GB ({h.get('basis')}); pagefile can still grow "
+              f"{h.get('pagefile_growth_left_gb')} GB, C: keeps >= 10 GB after that")
 
 
 def record_peak(cfg: Config, job: str, note: str = "") -> float | None:

@@ -137,16 +137,26 @@ def job_peak_gb(job_key: str) -> dict | None:
     return json.loads(p.read_text(encoding="utf-8")).get(job_key)
 
 
-def record_job_peak(job_key: str, peak_gb: float, note: str = "") -> dict:
-    """Keep the MAX observed process peak per job (conservative), plus the latest measurement."""
+def record_job_peak(job_key: str, peak_gb: float, note: str = "", lower_bound: bool = False) -> dict:
+    """Keep the MAX observed full-run process peak per job (conservative), plus the latest measurement.
+
+    An entry marked lower_bound (e.g. from a run stopped part-way) is REPLACED by the first full measurement
+    instead of being max-ed with it. Recording another lower bound never lowers an existing value.
+    """
     p = peaks_path()
     data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
     prev = data.get(job_key, {})
     now = datetime.now().isoformat(timespec="seconds")
+    replacing = bool(prev.get("lower_bound")) and not lower_bound
+    peak = peak_gb if replacing else max(peak_gb, prev.get("peak_gb", 0.0))
+    if replacing:
+        note = f"{note} [replaced lower bound {prev.get('peak_gb')} GB]".strip()
     entry = {
-        "peak_gb": round(max(peak_gb, prev.get("peak_gb", 0.0)), 2),
+        "peak_gb": round(peak, 2),
+        "lower_bound": lower_bound and (not prev or bool(prev.get("lower_bound"))),
         "latest_gb": round(peak_gb, 2), "latest_at": now, "latest_note": note,
-        "history": [*prev.get("history", []), {"gb": round(peak_gb, 2), "at": now, "note": note}][-10:],
+        "history": [*prev.get("history", []), {"gb": round(peak_gb, 2), "at": now, "note": note,
+                                               "lower_bound": lower_bound}][-10:],
     }  # fmt: skip
     data[job_key] = entry
     p.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -157,24 +167,65 @@ class CommitHeadroomError(RuntimeError):
     pass
 
 
-def require_commit_headroom(job_key: str, default_gb: float = 18.0, margin_gb: float = 3.0) -> dict:
-    """Refuse to start if (commit limit - commit in use) < (measured peak or default) + margin."""
+def pagefile_settings() -> dict[str, int | None]:
+    """System-drive pagefile: currently allocated MB and configured maximum MB (None = system managed/unknown)."""
+    drive = os.environ.get("SystemDrive", "C:")
+    cmd = (f"$s = Get-CimInstance Win32_PageFileSetting | Where-Object {{ $_.Name -like '{drive}*' }}; "
+           "if ($s) { [string]($s | Measure-Object MaximumSize -Sum).Sum } else { '' }")  # fmt: skip
+    max_mb: int | None = None
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+                           capture_output=True, text=True, timeout=60)  # fmt: skip
+        out = r.stdout.strip()
+        if r.returncode == 0 and out:
+            max_mb = int(float(out)) or None  # 0 = system managed: no fixed cap
+    except Exception:  # noqa: BLE001
+        pass
+    return {"allocated_mb": pagefile_mb(), "max_mb": max_mb}
+
+
+def require_commit_headroom(job_key: str, default_gb: float = 18.0, margin_gb: float = 3.0,
+                            c_growth_margin_gb: float = 10.0) -> dict:  # fmt: skip
+    """Refuse to start unless both hold:
+    1. commit headroom against the CAPPED limit (RAM + pagefile maximum) minus commit in use
+       >= the job's measured peak (or default) + margin;
+    2. C: free >= remaining pagefile growth (max - currently allocated) + c_growth_margin_gb,
+       so the pagefile can grow to its cap without filling C:.
+    Without a fixed pagefile cap, check 1 falls back to the current commit limit and check 2 is skipped."""
     cs = commit_stats()
     if not cs:
         return {}
+    pf = pagefile_settings()
     rec = job_peak_gb(job_key)
     basis = rec["peak_gb"] if rec else default_gb
-    src = f"measured peak {basis:.1f} GB" if rec else f"default {default_gb:.0f} GB (not yet measured)"
+    kind = "lower-bound peak" if rec and rec.get("lower_bound") else "measured peak"
+    src = f"{kind} {basis:.1f} GB" if rec else f"default {default_gb:.0f} GB (not yet measured)"
     need = basis + margin_gb
-    headroom = cs["commit_limit_gb"] - cs["commit_total_gb"]
-    info = {"job": job_key, "need_gb": round(need, 2), "headroom_gb": round(headroom, 2), "basis": src, **cs}
+    if pf["max_mb"] and pf["allocated_mb"] is not None:
+        limit = cs["physical_total_gb"] + pf["max_mb"] / 1024
+        limit_src = f"RAM {cs['physical_total_gb']:.1f} + pagefile max {pf['max_mb'] / 1024:.1f}"
+        growth_gb = max(pf["max_mb"] - pf["allocated_mb"], 0) / 1024
+    else:
+        limit, limit_src, growth_gb = cs["commit_limit_gb"], "current commit limit (no fixed pagefile cap)", None
+    headroom = limit - cs["commit_total_gb"]
+    free = c_free_gb()
+    info = {"job": job_key, "need_gb": round(need, 2), "headroom_gb": round(headroom, 2), "basis": src,
+            "limit_gb": round(limit, 2), "limit_source": limit_src, "pagefile": pf,
+            "pagefile_growth_left_gb": None if growth_gb is None else round(growth_gb, 2),
+            "c_free_gb": round(free, 2), **cs}  # fmt: skip
     if headroom < need:
         top = top_commit_processes(5)
         lines = "\n".join(f"    {t['commit_gb']:6.2f} GB  {t['name']} (pid {t['pid']})" for t in top)
         raise CommitHeadroomError(
-            f"Refusing to start {job_key}: commit headroom {headroom:.1f} GB (limit {cs['commit_limit_gb']:.1f} - "
+            f"Refusing to start {job_key}: commit headroom {headroom:.1f} GB (limit {limit:.1f} = {limit_src}; "
             f"in use {cs['commit_total_gb']:.1f}) < needed {need:.1f} GB ({src} + {margin_gb:.0f} GB margin).\n"
             f"  Top 5 processes by commit (close some to free headroom):\n{lines}"
+        )
+    if growth_gb is not None and free < growth_gb + c_growth_margin_gb:
+        raise LowDiskError(
+            f"Refusing to start {job_key}: C: has {free:.1f} GB free, but the pagefile may still grow "
+            f"{growth_gb:.1f} GB (to its {pf['max_mb']} MB cap) and {c_growth_margin_gb:.0f} GB must stay free: "
+            f"need {growth_gb + c_growth_margin_gb:.1f} GB."
         )
     return info
 
