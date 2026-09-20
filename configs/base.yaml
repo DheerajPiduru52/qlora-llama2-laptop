@@ -1,0 +1,26 @@
+# Shared defaults. Other configs say `extends: base.yaml` and override what they need.
+# CLI overrides: `qlora <cmd> -c <file> --set data.subsample_size=3000 --set seed=7`
+experiment: qlora-cs-practice
+seed: 42
+
+model:
+  name: meta-llama/Llama-2-7b-chat-hf
+  tokenizer: null              # null -> same as model.name
+  revision: f5db02db724555f92da89c216ac04704f23d4590   # pinned model/tokenizer commit
+  pad_token: "<pad>"           # dedicated pad token, never EOS
+  attn_implementation: sdpa
+  allow_patterns: ["*.safetensors", "*.json", "tokenizer.model"]
+
+data:
+  hf_dataset: bitext/Bitext-customer-support-llm-chatbot-training-dataset
+  hf_revision: 430d1a89bd93bd1fa23c16f29dd53e73f0087443   # pinned dataset commit
+  hf_filename: Bitext_Sample_Customer_Support_Training_Dataset_27K_responses-v11.csv
+  instruction_field: instruction
+  output_field: response
+  metadata_fields: [category, intent, flags]
+  stratify_field: intent
+  system_prompt: "You are a helpful, concise customer support agent for an online store."
+  subsample_size: 6000
+  split: {train: 0.90, val: 0.05, test: 0.05}
+  max_seq_length: 1024
+  processed_name: bitext_cs    # -> data/processed/<processed_name>/

@@ -64,6 +64,31 @@ def mlflow_server(
     raise typer.Exit(subprocess.call(cmd))
 
 
+ConfigOpt = typer.Option("base.yaml", "--config", "-c", help="YAML in configs/ or a path")
+SetOpt = typer.Option(None, "--set", help="Override, e.g. --set data.subsample_size=3000 (repeatable)")
+
+
+@app.command("data")
+def data_cmd(
+    config: str = ConfigOpt,
+    set_: list[str] = SetOpt,
+    no_mlflow: bool = typer.Option(False, "--no-mlflow", help="Skip MLflow logging"),
+) -> None:
+    """Phase 1: download, clean, subsample, split, data card, log dataset hash to MLflow."""
+    from qlora_pipeline.config import load_config
+    from qlora_pipeline.data import run_data
+
+    cfg = load_config(config, set_)
+    res = run_data(cfg, log_mlflow=not no_mlflow)
+    typer.echo(f"funnel:       {res['funnel']}")
+    typer.echo(f"leakage:      {res['leakage']}")
+    typer.echo(f"token p50/p95/p99/max (before filter): "
+               f"{[res['token_lengths']['corpus_before_filter'][k] for k in ('p50', 'p95', 'p99', 'max')]}")  # fmt: skip
+    typer.echo(f"dataset hash: {res['dataset_hash']}")
+    typer.echo(f"output:       {res['out_dir']}")
+    typer.echo(f"data card:    {res['data_card']}")
+
+
 def _later(phase: int):
     def _stub() -> None:
         typer.echo(f"Not implemented yet: arrives in Phase {phase}.")
@@ -73,7 +98,7 @@ def _later(phase: int):
 
 
 for _name, _phase in [
-    ("data", 1), ("smoke", 2), ("train", 2), ("eval", 3), ("bench", 4),
+    ("smoke", 2), ("train", 2), ("eval", 3), ("bench", 4),
     ("merge", 5), ("serve", 6), ("chat", 6), ("load-test", 6),
 ]:  # fmt: skip
     app.command(_name, help=f"(Phase {_phase})")(_later(_phase))
