@@ -1,0 +1,60 @@
+[project]
+name = "qlora-pipeline"
+version = "0.1.0"
+description = "Config-driven local QLoRA fine-tuning pipeline (Windows, everything under QLORA_ROOT)"
+readme = "README.md"
+requires-python = "==3.11.*"
+dependencies = [
+    "torch>=2.7",
+    "transformers",
+    "peft",
+    "trl",
+    "bitsandbytes",
+    "accelerate",
+    "datasets",
+    "evaluate",
+    "rouge-score",
+    "mlflow",
+    "nvidia-ml-py",          # provides the `pynvml` module (the `pynvml` PyPI name is a deprecated shim)
+    "lm-eval",
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "python-dotenv",
+    "typer",
+    "pyyaml",
+    "pandas",
+    "httpx",
+]
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+qlora = "qlora_pipeline.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv]
+# Native Windows only for this build; keeps the lock small and avoids resolving Linux-only wheels.
+environments = ["sys_platform == 'win32'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.ruff]
+line-length = 125
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
