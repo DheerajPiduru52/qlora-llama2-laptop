@@ -135,9 +135,12 @@ class EvalCfg(_Strict):
     weights: str | None = None            # adapter or full-model dir; null -> artifacts/adapters/<train.output_name>
     quantized: Literal["auto", "true", "false"] = "auto"  # auto: 4-bit iff method == qlora (as trained)
     max_new_tokens: int = Field(512, gt=0)
-    gen_batch_size: int = Field(16, gt=0)
+    gen_batch_size: int = Field(8, gt=0)   # 16 fragmented the KV-cache allocator past 16 GB VRAM (probe 2026-11-19)
     ppl_batch_size: int = Field(8, gt=0)
     test_limit: int | None = None         # null = full test split
+    test_select: Literal["first", "longest"] = "first"  # which rows test_limit keeps (longest = memory worst case)
+    max_reserved_gb: float | None = 14.0  # hard cap on PyTorch reserved VRAM (set_per_process_memory_fraction)
+    continue_on_oom: bool = False         # probe mode: record a stage OOM and continue instead of failing
     compare_base: bool = True             # also score the untuned base (adapter disabled)
     rouge_tolerance: float = 1.0          # parity tolerance (ROUGE-L points) used by Phase 4
     lm_eval_tasks: list[str] = Field(default_factory=lambda: ["arc_easy", "hellaswag"])

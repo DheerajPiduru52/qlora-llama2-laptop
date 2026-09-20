@@ -102,6 +102,8 @@ def generate(model, tok, cfg: Config, rows: list[dict], gen_cfg) -> list[dict]:
                 "gen_tokens": n_real,
                 "hit_max_new_tokens": tok.eos_token_id not in new,
             }
+        del gen
+        torch.cuda.empty_cache()  # the growing KV cache fragments the allocator; drop fragments between batches
     return out  # type: ignore[return-value]
 
 
@@ -142,30 +144,61 @@ def _pct(v) -> float:
         return float("nan")
 
 
-def lm_eval_regression(model, tok, cfg: Config) -> dict[str, dict[str, float]]:
+def lm_eval_regression(model, tok, cfg: Config, stage_mem: dict | None = None) -> dict[str, dict[str, float]]:
+    """One simple_evaluate per task so each task gets its own peak-VRAM reading."""
     from lm_eval import simple_evaluate
     from lm_eval.models.huggingface import HFLM
 
     lm = HFLM(pretrained=model, tokenizer=tok, batch_size=cfg.eval.lm_eval_batch_size)
-    res = simple_evaluate(
-        model=lm, tasks=list(cfg.eval.lm_eval_tasks), limit=cfg.eval.lm_eval_limit, log_samples=False,
-        random_seed=cfg.seed, numpy_random_seed=cfg.seed, torch_random_seed=cfg.seed, fewshot_random_seed=cfg.seed,
-    )  # fmt: skip
     out = {}
-    for task, m in res["results"].items():
+    for task in cfg.eval.lm_eval_tasks:
+
+        def _run(task=task):
+            return simple_evaluate(
+                model=lm, tasks=[task], limit=cfg.eval.lm_eval_limit, log_samples=False, random_seed=cfg.seed,
+                numpy_random_seed=cfg.seed, torch_random_seed=cfg.seed, fewshot_random_seed=cfg.seed,
+            )  # fmt: skip
+
+        res = _stage(cfg, stage_mem, f"lm_eval.{task}", _run)
+        if res is None:  # OOM in probe mode
+            out[task] = {}
+            continue
         keep = ("acc", "acc_norm", "acc_stderr", "acc_norm_stderr")
-        out[task] = {k.split(",")[0]: _pct(v) for k, v in m.items() if k.split(",")[0] in keep}
+        for t, m in res["results"].items():
+            out[t] = {k.split(",")[0]: _pct(v) for k, v in m.items() if k.split(",")[0] in keep}
     return out
 
 
-def score_variant(model, tok, cfg: Config, test_rows, val_rows, gen_cfg, do_lm_eval: bool) -> dict[str, Any]:
+def _stage(cfg: Config, stage_mem: dict | None, name: str, fn):
+    """Run one eval stage with its own peak-VRAM window; release cached blocks afterwards (WDDM commit)."""
     import torch
 
-    t0 = time.time()
+    torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
-    gens = generate(model, tok, cfg, test_rows, gen_cfg)
-    t_gen = time.time() - t0
-    torch.cuda.empty_cache()  # on Windows/WDDM reserved VRAM is charged to commit; release between stages
+    t0, oom, result = time.time(), False, None
+    try:
+        result = fn()
+    except RuntimeError as e:  # torch.cuda.OutOfMemoryError, or AcceleratorError "CUDA error: out of memory"
+        if not cfg.eval.continue_on_oom or "out of memory" not in str(e).lower():
+            raise
+        oom = True
+    rec = {"peak_reserved_gb": round(torch.cuda.max_memory_reserved() / GB, 3),
+           "peak_allocated_gb": round(torch.cuda.max_memory_allocated() / GB, 3),
+           "secs": round(time.time() - t0, 1), "oom": oom}  # fmt: skip
+    torch.cuda.empty_cache()
+    if stage_mem is not None:
+        stage_mem[name] = rec
+    print(f"  stage {name:22} peak reserved {rec['peak_reserved_gb']:6.2f} GB  allocated {rec['peak_allocated_gb']:6.2f} GB"
+          f"  {rec['secs']:7.1f}s{'  OOM' if oom else ''}", flush=True)
+    return result
+
+
+def score_variant(model, tok, cfg: Config, test_rows, val_rows, gen_cfg, do_lm_eval: bool) -> dict[str, Any]:
+    stage_mem: dict[str, dict] = {}
+    gens = _stage(cfg, stage_mem, "generation", lambda: generate(model, tok, cfg, test_rows, gen_cfg))
+    if gens is None:  # OOM in probe mode
+        gens = [{"pred": "", "gen_tokens": 0, "hit_max_new_tokens": False} for _ in test_rows]
+    t_gen = stage_mem["generation"]["secs"]
     preds = [g["pred"] for g in gens]
     refs = [r["output"] for r in test_rows]
     res: dict[str, Any] = {
@@ -174,15 +207,15 @@ def score_variant(model, tok, cfg: Config, test_rows, val_rows, gen_cfg, do_lm_e
         "rougeL": rouge_l(preds, refs),
         "slots": slot_stats(preds, refs),
         "gen_time_s": round(t_gen, 1),
-        "gen_tokens_per_s": round(sum(g["gen_tokens"] for g in gens) / t_gen, 1),
+        "gen_tokens_per_s": round(sum(g["gen_tokens"] for g in gens) / max(t_gen, 1e-9), 1),
         "hit_max_new_tokens_pct": round(100 * sum(g["hit_max_new_tokens"] for g in gens) / len(gens), 2),
         "mean_gen_tokens": round(sum(g["gen_tokens"] for g in gens) / len(gens), 1),
     }
-    res["val_perplexity"] = perplexity(model, tok, cfg, val_rows)
-    torch.cuda.empty_cache()
-    res["lm_eval"] = lm_eval_regression(model, tok, cfg) if do_lm_eval else {}
-    torch.cuda.empty_cache()
-    res["peak_mem_reserved_gb"] = round(torch.cuda.max_memory_reserved() / GB, 3)
+    ppl = _stage(cfg, stage_mem, "perplexity", lambda: perplexity(model, tok, cfg, val_rows))
+    res["val_perplexity"] = ppl if ppl is not None else float("nan")
+    res["lm_eval"] = lm_eval_regression(model, tok, cfg, stage_mem) if do_lm_eval else {}
+    res["stage_mem"] = stage_mem
+    res["peak_mem_reserved_gb"] = max(s["peak_reserved_gb"] for s in stage_mem.values())
     return res
 
 
@@ -230,6 +263,18 @@ def _report(cfg: Config, name: str, weights: Path, v: dict[str, dict], df: pd.Da
                         f"{v[k]['lm_eval'][t][m]:.1f} ± {v[k]['lm_eval'][t].get(m + '_stderr', float('nan')):.1f}"
                         for k in variants
                     ) + " |\n"
+    e = cfg.eval
+    batches = f"batch sizes: gen {e.gen_batch_size}, ppl {e.ppl_batch_size}, lm-eval {e.lm_eval_batch_size}"
+    stages = list(next(iter(v.values()))["stage_mem"])
+    mem_md = "| stage | " + " | ".join(f"{k} reserved / allocated GB" for k in variants) + " |\n|---|" + "---:|" * len(
+        variants) + "\n"
+    for st in stages:
+        cells = []
+        for k in variants:
+            m = v[k]["stage_mem"].get(st, {})
+            cells.append(f"{m.get('peak_reserved_gb', float('nan')):.2f} / {m.get('peak_allocated_gb', float('nan')):.2f}"
+                         + (" OOM" if m.get("oom") else ""))
+        mem_md += f"| {st} | " + " | ".join(cells) + " |\n"
     verdict = forgetting_verdict(cfg, v)
     examples = ""
     for _, r in df.head(3).iterrows():
@@ -252,6 +297,9 @@ def _report(cfg: Config, name: str, weights: Path, v: dict[str, dict], df: pd.Da
 ## ROUGE-L per category
 
 {cat_md}
+## Peak GPU memory per stage ({batches})
+
+{mem_md}
 ## Forgetting check (lm-evaluation-harness, limit={cfg.eval.lm_eval_limit} per task, ± = stderr)
 
 {lm_md or '_skipped_'}
@@ -284,7 +332,8 @@ def forgetting_verdict(cfg: Config, v: dict[str, dict]) -> dict[str, Any]:
     return {"text": text, "flags": flags, "deltas": deltas}
 
 
-def run_eval(cfg: Config, do_lm_eval: bool = True, tag: str | None = None) -> dict[str, Any]:
+def run_eval(cfg: Config, do_lm_eval: bool = True, tag: str | None = None, record_peak_commit: bool = True,
+             replace_peak: bool = False) -> dict[str, Any]:  # fmt: skip
     import mlflow
 
     from qlora_pipeline.model import is_adapter_dir, load_for_inference, preflight
@@ -295,9 +344,15 @@ def run_eval(cfg: Config, do_lm_eval: bool = True, tag: str | None = None) -> di
     name = tag or cfg.train.output_name
     quantized = cfg.method == "qlora" if cfg.eval.quantized == "auto" else cfg.eval.quantized == "true"
     tok = load_tokenizer(cfg.model, padding_side="left")
-    test_rows = load_split(cfg, "test")[: cfg.eval.test_limit] if cfg.eval.test_limit else load_split(cfg, "test")
+    test_rows = load_split(cfg, "test")
+    if cfg.eval.test_limit:
+        if cfg.eval.test_select == "longest":  # worst case for prompt length / KV cache
+            test_rows = sorted(test_rows, key=lambda r: -len(encode_prompt(tok, r["system"], r["instruction"])))
+        test_rows = test_rows[: cfg.eval.test_limit]
     val_rows = load_split(cfg, "val")
 
+    cap = telemetry.cap_vram(cfg.eval.max_reserved_gb)
+    print(f"VRAM cap: reserved limited to {cap:.2f} GB of {telemetry.physical_vram_gb():.2f} GB physical")
     model = load_for_inference(cfg, tok, weights, quantized=quantized)
     gen_cfg = generation_config(cfg, tok, model)
     variants: dict[str, dict] = {}
@@ -337,11 +392,18 @@ def run_eval(cfg: Config, do_lm_eval: bool = True, tag: str | None = None) -> di
             **{f"slots.{a}": b for a, b in r["slots"].items()},
             "lm_eval": r["lm_eval"], "gen_time_s": r["gen_time_s"], "gen_tokens_per_s": r["gen_tokens_per_s"],
             "hit_max_new_tokens_pct": r["hit_max_new_tokens_pct"], "mean_gen_tokens": r["mean_gen_tokens"],
-            "peak_mem_reserved_gb": r["peak_mem_reserved_gb"],
+            "peak_mem_reserved_gb": r["peak_mem_reserved_gb"], "stage_mem": r["stage_mem"],
         }  # fmt: skip
+    from qlora_pipeline.audit import process_commit_gb
     from qlora_pipeline.model import record_peak
 
-    summary["process_peak_commit_gb"] = record_peak(cfg, "eval", f"eval {name}")
+    summary["process_peak_commit_gb"] = (
+        record_peak(cfg, "eval", f"eval {name}", replace=replace_peak) if record_peak_commit
+        else round(process_commit_gb().get("peak_private_gb", float("nan")), 2)
+    )
+    worst = max(summary[k]["peak_mem_reserved_gb"] for k in variants)
+    summary["physical_vram_gb"] = round(telemetry.physical_vram_gb(), 2)
+    summary["sysmem_fallback_detected"] = worst > summary["physical_vram_gb"]
     fv = forgetting_verdict(cfg, variants)
     summary["forgetting"], summary["forgetting_deltas"] = fv["flags"], fv["deltas"]
 
@@ -363,6 +425,9 @@ def run_eval(cfg: Config, do_lm_eval: bool = True, tag: str | None = None) -> di
                             for c, x in s["rougeL_per_category"].items()})  # fmt: skip
             for t, m in s["lm_eval"].items():
                 metrics.update({f"{k}.lm_eval.{t}.{a}": b for a, b in m.items() if math.isfinite(b)})
+            for st, mem in s["stage_mem"].items():
+                metrics.update({f"{k}.mem.{st}.peak_reserved_gb": mem["peak_reserved_gb"],
+                                f"{k}.mem.{st}.peak_allocated_gb": mem["peak_allocated_gb"]})  # fmt: skip
         if "base" in variants:
             metrics["delta.rougeL"] = summary["tuned"]["rougeL"] - summary["base"]["rougeL"]
         mlflow.log_metrics(metrics)

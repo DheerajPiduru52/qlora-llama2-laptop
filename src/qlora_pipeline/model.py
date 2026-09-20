@@ -63,14 +63,14 @@ def preflight(cfg: Config, what: str, job: str) -> None:
               f"{h.get('pagefile_growth_left_gb')} GB, C: keeps >= 10 GB after that")
 
 
-def record_peak(cfg: Config, job: str, note: str = "") -> float | None:
+def record_peak(cfg: Config, job: str, note: str = "", replace: bool = False) -> float | None:
     """Store this process's lifetime peak private commit for the job (feeds the next pre-flight)."""
     from qlora_pipeline.audit import process_commit_gb, record_job_peak
 
     pc = process_commit_gb()
     if not pc:
         return None
-    record_job_peak(job_key(job, cfg), pc["peak_private_gb"], note)
+    record_job_peak(job_key(job, cfg), pc["peak_private_gb"], note, replace=replace)
     return pc["peak_private_gb"]
 
 

@@ -137,7 +137,8 @@ def job_peak_gb(job_key: str) -> dict | None:
     return json.loads(p.read_text(encoding="utf-8")).get(job_key)
 
 
-def record_job_peak(job_key: str, peak_gb: float, note: str = "", lower_bound: bool = False) -> dict:
+def record_job_peak(job_key: str, peak_gb: float, note: str = "", lower_bound: bool = False,
+                    replace: bool = False) -> dict:  # fmt: skip
     """Keep the MAX observed full-run process peak per job (conservative), plus the latest measurement.
 
     An entry marked lower_bound (e.g. from a run stopped part-way) is REPLACED by the first full measurement
@@ -147,10 +148,11 @@ def record_job_peak(job_key: str, peak_gb: float, note: str = "", lower_bound: b
     data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
     prev = data.get(job_key, {})
     now = datetime.now().isoformat(timespec="seconds")
-    replacing = bool(prev.get("lower_bound")) and not lower_bound
+    replacing = replace or ((bool(prev.get("lower_bound")) or bool(prev.get("stale"))) and not lower_bound)
     peak = peak_gb if replacing else max(peak_gb, prev.get("peak_gb", 0.0))
     if replacing:
-        note = f"{note} [replaced lower bound {prev.get('peak_gb')} GB]".strip()
+        why = "stale" if prev.get("stale") else ("lower bound" if prev.get("lower_bound") else "previous")
+        note = f"{note} [replaced {why} {prev.get('peak_gb')} GB]".strip()
     entry = {
         "peak_gb": round(peak, 2),
         "lower_bound": lower_bound and (not prev or bool(prev.get("lower_bound"))),
@@ -197,6 +199,8 @@ def require_commit_headroom(job_key: str, default_gb: float = 18.0, margin_gb: f
         return {}
     pf = pagefile_settings()
     rec = job_peak_gb(job_key)
+    if rec and rec.get("stale"):  # measured under conditions that no longer hold -> treat as not yet measured
+        rec = None
     basis = rec["peak_gb"] if rec else default_gb
     kind = "lower-bound peak" if rec and rec.get("lower_bound") else "measured peak"
     src = f"{kind} {basis:.1f} GB" if rec else f"default {default_gb:.0f} GB (not yet measured)"

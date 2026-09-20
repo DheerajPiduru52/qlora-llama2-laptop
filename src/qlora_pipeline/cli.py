@@ -132,12 +132,15 @@ def eval_cmd(
     set_: list[str] = SetOpt,
     skip_lm_eval: bool = typer.Option(False, "--skip-lm-eval", help="Skip the lm-evaluation-harness regression"),
     tag: str = typer.Option(None, help="Report name (default: train.output_name)"),
+    no_record_peak: bool = typer.Option(False, "--no-record-peak", help="Do not store this run's commit peak"),
+    replace_peak: bool = typer.Option(False, "--replace-peak", help="Store this run's peak, replacing the old one"),
 ) -> None:
     """Phase 3: base vs tuned on the test split (ROUGE-L, perplexity, slots, lm-eval forgetting check)."""
     from qlora_pipeline.config import load_config
     from qlora_pipeline.evaluate import run_eval
 
-    s = run_eval(load_config(config, set_), do_lm_eval=not skip_lm_eval, tag=tag)
+    s = run_eval(load_config(config, set_), do_lm_eval=not skip_lm_eval, tag=tag,
+                 record_peak_commit=not no_record_peak, replace_peak=replace_peak)
     for k in ("base", "tuned"):
         if k in s:
             v = s[k]
@@ -146,6 +149,12 @@ def eval_cmd(
                        f"invented/row {v['slots.invented_slots_per_row']:.3f}  "
                        f"hit-max {v['hit_max_new_tokens_pct']}%  lm_eval {v['lm_eval']}")  # fmt: skip
     typer.echo(f"forgetting flags: {s['forgetting'] or 'none'}   mlflow run {s['mlflow_run_id']}")
+    typer.echo(f"process peak commit {s['process_peak_commit_gb']} GB; physical VRAM {s['physical_vram_gb']} GB; "
+               f"sysmem fallback detected: {s['sysmem_fallback_detected']}")
+    for k in ("base", "tuned"):
+        for st, m in s.get(k, {}).get("stage_mem", {}).items():
+            typer.echo(f"  {k:5} {st:22} peak reserved {m['peak_reserved_gb']:6.2f} GB  allocated "
+                       f"{m['peak_allocated_gb']:6.2f} GB{'  OOM' if m['oom'] else ''}")
 
 
 def _later(phase: int):

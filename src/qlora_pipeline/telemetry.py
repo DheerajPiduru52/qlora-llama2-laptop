@@ -91,6 +91,35 @@ class GpuMonitor:
 
 
 
+def physical_vram_gb(index: int = 0) -> float:
+    import torch
+
+    return torch.cuda.get_device_properties(index).total_memory / 1024**3
+
+
+def cap_vram(max_reserved_gb: float | None, index: int = 0) -> float:
+    """Cap PyTorch's reserved VRAM: past the cap the allocator frees cached blocks and retries, then raises OOM.
+    Returns the effective cap in GB (physical VRAM if no cap)."""
+    import torch
+
+    phys = physical_vram_gb(index)
+    if not max_reserved_gb:
+        return phys
+    frac = min(max_reserved_gb / phys, 1.0)
+    torch.cuda.set_per_process_memory_fraction(frac, index)
+    return frac * phys
+
+
+def check_no_sysmem_fallback(peak_reserved_gb: float, what: str) -> None:
+    """Peak reserved above physical VRAM means the driver spilled to system memory (fallback policy on)."""
+    phys = physical_vram_gb()
+    if peak_reserved_gb > phys:
+        raise RuntimeError(
+            f"{what}: peak reserved VRAM {peak_reserved_gb:.2f} GB exceeds physical {phys:.2f} GB, so the NVIDIA "
+            "CUDA Sysmem Fallback Policy is spilling to system memory. Set it to 'Prefer No Sysmem Fallback'."
+        )
+
+
 def git_sha() -> str:
     """HEAD SHA, suffixed with -dirty if the working tree has uncommitted changes."""
     try:

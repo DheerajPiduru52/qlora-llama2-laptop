@@ -117,3 +117,24 @@ def test_measured_peak_drives_need(monkeypatch, tmp_path, capped):
     monkeypatch.setattr(audit, "c_free_gb", lambda: 38.0)
     info = audit.require_commit_headroom("eval:x")
     assert info["need_gb"] == 12.5 and "measured peak" in info["basis"]
+
+
+def test_stale_peak_is_ignored_then_replaced(monkeypatch, tmp_path, capped):
+    import json
+
+    monkeypatch.setenv("QLORA_ROOT", str(tmp_path))
+    audit.record_job_peak("eval:x", 30.16, "fallback on")
+    data = json.loads(audit.peaks_path().read_text())
+    data["eval:x"]["stale"] = True
+    audit.peaks_path().write_text(json.dumps(data))
+    monkeypatch.setattr(audit, "commit_stats", lambda: _cs(20.0))  # 47.4 - 20 = 27.4 >= 18 + 3 (stale ignored)
+    monkeypatch.setattr(audit, "c_free_gb", lambda: 38.0)
+    assert "default 18" in audit.require_commit_headroom("eval:x")["basis"]
+    e = audit.record_job_peak("eval:x", 17.2, "probe, fallback off")
+    assert e["peak_gb"] == 17.2 and "replaced stale 30.16" in e["latest_note"] and not e.get("stale")
+
+
+def test_explicit_replace_overrides_max(tmp_path, monkeypatch):
+    monkeypatch.setenv("QLORA_ROOT", str(tmp_path))
+    audit.record_job_peak("eval:x", 20.0, "a")
+    assert audit.record_job_peak("eval:x", 15.0, "b", replace=True)["peak_gb"] == 15.0
