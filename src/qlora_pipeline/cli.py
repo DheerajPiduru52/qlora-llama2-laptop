@@ -126,6 +126,28 @@ def smoke_cmd(
     raise typer.Exit(0 if ok else 1)
 
 
+@app.command("eval")
+def eval_cmd(
+    config: str = typer.Option("llama2_7b_qlora.yaml", "--config", "-c"),
+    set_: list[str] = SetOpt,
+    skip_lm_eval: bool = typer.Option(False, "--skip-lm-eval", help="Skip the lm-evaluation-harness regression"),
+    tag: str = typer.Option(None, help="Report name (default: train.output_name)"),
+) -> None:
+    """Phase 3: base vs tuned on the test split (ROUGE-L, perplexity, slots, lm-eval forgetting check)."""
+    from qlora_pipeline.config import load_config
+    from qlora_pipeline.evaluate import run_eval
+
+    s = run_eval(load_config(config, set_), do_lm_eval=not skip_lm_eval, tag=tag)
+    for k in ("base", "tuned"):
+        if k in s:
+            v = s[k]
+            typer.echo(f"{k:6} ROUGE-L {v['rougeL']:.2f}  val ppl {v['val_perplexity']:.3f}  "
+                       f"slot recall {v['slots.slot_recall_pct']:.1f}%  "
+                       f"invented/row {v['slots.invented_slots_per_row']:.3f}  "
+                       f"hit-max {v['hit_max_new_tokens_pct']}%  lm_eval {v['lm_eval']}")  # fmt: skip
+    typer.echo(f"forgetting flags: {s['forgetting'] or 'none'}   mlflow run {s['mlflow_run_id']}")
+
+
 def _later(phase: int):
     def _stub() -> None:
         typer.echo(f"Not implemented yet: arrives in Phase {phase}.")
@@ -135,7 +157,7 @@ def _later(phase: int):
 
 
 for _name, _phase in [
-    ("eval", 3), ("bench", 4),
+    ("bench", 4),
     ("merge", 5), ("serve", 6), ("chat", 6), ("load-test", 6),
 ]:  # fmt: skip
     app.command(_name, help=f"(Phase {_phase})")(_later(_phase))

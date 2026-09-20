@@ -131,6 +131,21 @@ class TrainCfg(_Strict):
         return self.effective_batch_size // self.per_device_train_batch_size
 
 
+class EvalCfg(_Strict):
+    weights: str | None = None            # adapter or full-model dir; null -> artifacts/adapters/<train.output_name>
+    quantized: Literal["auto", "true", "false"] = "auto"  # auto: 4-bit iff method == qlora (as trained)
+    max_new_tokens: int = Field(512, gt=0)
+    gen_batch_size: int = Field(16, gt=0)
+    ppl_batch_size: int = Field(8, gt=0)
+    test_limit: int | None = None         # null = full test split
+    compare_base: bool = True             # also score the untuned base (adapter disabled)
+    rouge_tolerance: float = 1.0          # parity tolerance (ROUGE-L points) used by Phase 4
+    lm_eval_tasks: list[str] = Field(default_factory=lambda: ["arc_easy", "hellaswag"])
+    lm_eval_limit: int | None = 200
+    lm_eval_batch_size: int = Field(8, gt=0)
+    forgetting_tolerance: float = 2.0     # flag if tuned acc drops more than this (points) vs base
+
+
 class Config(_Strict):
     experiment: str
     seed: int = 42
@@ -140,6 +155,7 @@ class Config(_Strict):
     quant: QuantCfg = Field(default_factory=QuantCfg)
     lora: LoraCfg = Field(default_factory=LoraCfg)
     train: TrainCfg = Field(default_factory=TrainCfg)
+    eval: EvalCfg = Field(default_factory=EvalCfg)
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

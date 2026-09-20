@@ -125,6 +125,32 @@ def param_counts(model) -> tuple[int, int]:
     return sum(p.numel() for p in model.parameters() if p.requires_grad), total
 
 
+def is_adapter_dir(path: Path) -> bool:
+    return (path / "adapter_config.json").is_file()
+
+
+def load_for_inference(cfg: Config, tok, weights: Path | None, quantized: bool):
+    """weights = adapter dir -> base + adapter (PeftModel); full-model dir -> that model; None -> base."""
+    from transformers import AutoModelForCausalLM
+
+    if weights is not None and not is_adapter_dir(weights):
+        kwargs: dict[str, Any] = {"dtype": torch.bfloat16, "attn_implementation": cfg.model.attn_implementation,
+                                  "device_map": {"": 0}}  # fmt: skip
+        if quantized:
+            kwargs["quantization_config"] = bnb_config(cfg)
+        model = AutoModelForCausalLM.from_pretrained(weights, **kwargs)
+        resize_for_pad(model, tok)
+    else:
+        model = load_base(cfg, tok, quantized=quantized)
+        if weights is not None:
+            from peft import PeftModel
+
+            model = PeftModel.from_pretrained(model, weights, is_trainable=False)
+    model.config.use_cache = True
+    model.eval()
+    return model
+
+
 def save_adapter_or_model(model, tok, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     if hasattr(model, "peft_config"):
