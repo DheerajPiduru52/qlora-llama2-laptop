@@ -138,3 +138,11 @@ def test_explicit_replace_overrides_max(tmp_path, monkeypatch):
     monkeypatch.setenv("QLORA_ROOT", str(tmp_path))
     audit.record_job_peak("eval:x", 20.0, "a")
     assert audit.record_job_peak("eval:x", 15.0, "b", replace=True)["peak_gb"] == 15.0
+
+
+def test_model_path_accepts_local_model_dir(tmp_path):
+    from qlora_pipeline.config import ModelCfg
+    from qlora_pipeline.model import model_path
+
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    assert model_path(ModelCfg(name=str(tmp_path))) == tmp_path

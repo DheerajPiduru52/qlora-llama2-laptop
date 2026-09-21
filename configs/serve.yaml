@@ -1,0 +1,17 @@
+# Phase 6 local serving: FastAPI + uvicorn, SageMaker inference contract (GET /ping, POST /invocations).
+# Loads the 4-bit base + the MLflow "champion" adapter; falls back to the merged model in 4-bit if that fails.
+extends: llama2_7b_qlora.yaml
+
+serve:
+  host: 127.0.0.1
+  port: 8080
+  source: registry
+  fallback_to_merged: true
+  merged_path: null            # null -> the registered version's merged_path tag
+  default_max_new_tokens: 256
+  max_new_tokens_limit: 512
+  default_temperature: 0.0     # greedy by default, same generation settings as eval
+  max_reserved_gb: 14.0
+  load_test_n: 20
+  load_test_concurrency: 1
+  load_test_max_new_tokens: 256

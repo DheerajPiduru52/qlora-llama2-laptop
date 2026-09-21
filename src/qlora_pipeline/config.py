@@ -149,6 +149,22 @@ class EvalCfg(_Strict):
     forgetting_tolerance: float = 2.0     # flag if tuned acc drops more than this (points) vs base
 
 
+class ServeCfg(_Strict):
+    host: str = "127.0.0.1"
+    port: int = Field(8080, gt=0, lt=65536)               # SageMaker inference contract port
+    source: Literal["registry", "merged"] = "registry"    # registry = 4-bit base + MLflow alias adapter
+    fallback_to_merged: bool = False                       # if the registry load fails, load the merged model in 4-bit
+    merged_path: str | None = None                         # null -> registry tag merged_path, else artifacts/merged/<name>
+    default_max_new_tokens: int = Field(256, gt=0)
+    max_new_tokens_limit: int = Field(512, gt=0)
+    default_temperature: float = Field(0.0, ge=0.0, le=2.0)  # 0 = greedy (same as eval)
+    max_reserved_gb: float | None = 14.0                   # PyTorch reserved-VRAM cap
+    request_timeout_s: float = 300.0
+    load_test_n: int = Field(20, gt=0)
+    load_test_concurrency: int = Field(1, gt=0)
+    load_test_max_new_tokens: int = Field(256, gt=0)
+
+
 class MergeCfg(_Strict):
     dtype: Literal["float16", "bfloat16"] = "float16"   # spec: fp16 merge on CPU (Llama 2 ships fp16 weights)
     validate_n: int = Field(50, gt=0)                   # first N test rows, greedy, merged vs adapter
@@ -176,6 +192,7 @@ class Config(_Strict):
     eval: EvalCfg = Field(default_factory=EvalCfg)
     safety: SafetyCfg = Field(default_factory=SafetyCfg)
     merge: MergeCfg = Field(default_factory=MergeCfg)
+    serve: ServeCfg = Field(default_factory=ServeCfg)
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

@@ -20,6 +20,9 @@ DTYPES = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch
 
 def model_path(model_cfg: ModelCfg) -> Path:
     """Local snapshot, downloading only allow_patterns (never the duplicate .bin weights)."""
+    local = Path(model_cfg.name)
+    if local.is_dir() and (local / "config.json").is_file():  # e.g. a merged model, or /opt/ml/model in a container
+        return local
     from huggingface_hub import snapshot_download
 
     return Path(snapshot_download(model_cfg.name, revision=model_cfg.revision, allow_patterns=model_cfg.allow_patterns))
@@ -50,8 +53,12 @@ def job_key(job: str, cfg: Config) -> str:
 def preflight(cfg: Config, what: str, job: str) -> None:
     """Large-model GPU jobs only: refuse if C: is low, or if Windows commit headroom is below the job's measured
     peak commit + margin (on WDDM, reserved VRAM is charged 1:1 to commit; the C: pagefile is capped)."""
+    import os
+
     from qlora_pipeline.audit import require_c_free, require_commit_headroom
 
+    if os.name != "nt":  # the C: pagefile / WDDM commit problem is Windows-specific
+        return
     est = estimate_params_b(cfg.model)
     if est is None or est >= cfg.safety.large_model_min_params_b:  # unknown size -> treat as large (safe side)
         label = f"~{est:.1f}B params" if est is not None else "unknown size"

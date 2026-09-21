@@ -193,6 +193,52 @@ def merge_cmd(
     raise typer.Exit(0 if v["pass"] else 1)
 
 
+@app.command("serve")
+def serve_cmd(
+    config: str = typer.Option("serve.yaml", "--config", "-c"),
+    set_: list[str] = SetOpt,
+    host: str = typer.Option(None, help="Override serve.host"),
+    port: int = typer.Option(None, help="Override serve.port"),
+) -> None:
+    """Phase 6: HTTP server (SageMaker contract: GET /ping, POST /invocations) on 4-bit base + champion adapter."""
+    from qlora_pipeline.config import load_config
+    from qlora_pipeline.serve import serve
+
+    serve(load_config(config, set_), host=host, port=port)
+
+
+@app.command("chat")
+def chat_cmd(
+    config: str = typer.Option("serve.yaml", "--config", "-c"),
+    url: str = typer.Option(None, help="Server URL (default http://<serve.host>:<serve.port>)"),
+    temperature: float = typer.Option(None, help="Sampling temperature (default: server default, greedy)"),
+) -> None:
+    """Phase 6: terminal REPL against the running server. /quit to exit."""
+    from qlora_pipeline.config import load_config
+    from qlora_pipeline.serve import chat_repl
+
+    chat_repl(load_config(config), url=url, temperature=temperature)
+
+
+@app.command("load-test")
+def load_test_cmd(
+    config: str = typer.Option("serve.yaml", "--config", "-c"),
+    url: str = typer.Option(None, help="Server URL"),
+    n: int = typer.Option(None, help="Requests (default serve.load_test_n = 20)"),
+    concurrency: int = typer.Option(None, help="Concurrent clients (default serve.load_test_concurrency)"),
+) -> None:
+    """Phase 6: N requests -> p50/p95 latency, tokens/sec, peak VRAM; logged to MLflow."""
+    from qlora_pipeline.config import load_config
+    from qlora_pipeline.serve import load_test
+
+    s = load_test(load_config(config), url=url, n=n, concurrency=concurrency)
+    typer.echo(f"{s['ok']}/{s['n']} ok (concurrency {s['concurrency']}): latency p50 {s['latency_p50_s']} s, "
+               f"p95 {s['latency_p95_s']} s; throughput {s['throughput_tokens_per_s']} tok/s; per-request p50 "
+               f"{s['per_request_tokens_per_s_p50']} tok/s; peak VRAM reserved {s['peak_vram_reserved_gb']} GB "
+               f"(allocated {s['peak_vram_allocated_gb']}) of {s['physical_vram_gb']}; mlflow run {s['mlflow_run_id']}")
+    raise typer.Exit(0 if s["errors"] == 0 else 1)
+
+
 def _later(phase: int):
     def _stub() -> None:
         typer.echo(f"Not implemented yet: arrives in Phase {phase}.")
@@ -203,7 +249,7 @@ def _later(phase: int):
 
 for _name, _phase in [
 
-    ("serve", 6), ("chat", 6), ("load-test", 6),
+
 ]:  # fmt: skip
     app.command(_name, help=f"(Phase {_phase})")(_later(_phase))
 
