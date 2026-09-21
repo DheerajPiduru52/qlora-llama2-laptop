@@ -1,0 +1,34 @@
+{
+  "data": {
+    "seconds": 16.1,
+    "source": "timed `qlora data --no-mlflow` re-run 2026-11-19 (dataset hash unchanged)"
+  },
+  "smoke": {
+    "seconds": 153.2,
+    "source": "runs/smoke-proxy-qlora/summary.json wall_time_s"
+  },
+  "train_7b": {
+    "seconds": 6866.5,
+    "source": "runs/llama2-7b-qlora/summary.json wall_time_s"
+  },
+  "eval_7b": {
+    "seconds": 1070.2,
+    "source": "logs/watch_eval_7b.csv first..last sample (base + tuned + lm-eval)"
+  },
+  "bench": {
+    "seconds": 2381.3,
+    "source": "logs/watch_bench.csv first..last sample (3 trainings + 3 evals)"
+  },
+  "merge_cpu": {
+    "seconds": 48.7,
+    "source": "artifacts/merged/llama2-7b-qlora/merge_info.json load_s+merge_s+save_s"
+  },
+  "merge_validation": {
+    "seconds": 430.2,
+    "source": "logs/watch_merge2.csv (reused merge: 2 x 50-row validation + registration)"
+  },
+  "load_test": {
+    "seconds": 114.04,
+    "source": "artifacts/reports/load_test.json wall_s (20 requests)"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "merged_dir": "G:\\QLoRA\\artifacts\\merged\\llama2-7b-qlora",
+  "merge_info": {
+    "base_model": "meta-llama/Llama-2-7b-chat-hf",
+    "base_revision": "f5db02db724555f92da89c216ac04704f23d4590",
+    "dtype": "float16",
+    "device": "cpu",
+    "adapter_dir": "G:\\QLoRA\\artifacts\\adapters\\llama2-7b-qlora",
+    "adapter_sha256": "d04b8783e05f0e074ce5f1d1b2e793f83b85553809ea4fa722ff9b24943184d8",
+    "embedding_rows": [
+      32000,
+      32064
+    ],
+    "pad_token_id": 32000,
+    "load_s": 21.5,
+    "merge_s": 12.7,
+    "save_s": 14.5,
+    "process_peak_commit_gb": 16.53,
+    "git_sha": "861a5355add1e9b49395ee88d2ec69f5a92e7bc6",
+    "files": {
+      "chat_template.jinja": 815,
+      "config.json": 761,
+      "generation_config.json": 197,
+      "model-00001-of-00003.safetensors": 4977790376,
+      "model-00002-of-00003.safetensors": 4947390784,
+      "model-00003-of-00003.safetensors": 3552732176,
+      "model.safetensors.index.json": 24285,
+      "tokenizer.json": 3619051,
+      "tokenizer_config.json": 442
+    }
+  },
+  "validation": {
+    "n": 50,
+    "rougeL_adapter": 43.994,
+    "rougeL_merged": 44.394,
+    "delta": 0.4,
+    "tolerance": 0.5,
+    "pass": true,
+    "rows": 50,
+    "identical_outputs_pct": 12.0,
+    "mean_abs_row_rouge_diff": 4.03,
+    "merged_loaded_as": "4-bit NF4 (fp16 merge does not fit the 14 GB VRAM cap with a KV cache)",
+    "adapter_loaded_as": "4-bit NF4 base + LoRA adapter (as trained)",
+    "method_note": "Merge fidelity checked via NF4 re-quantization of the fp16 merge; the fp16 merged model was not run end-to-end (13.5 GB weights exceed the 14 GB VRAM cap once a KV cache is added; CPU generation of 50 replies is impractical). The delta mixes merge error with re-quantization error, and n=50 makes ROUGE-L noisy.",
+    "reused_merge": true
+  },
+  "mlflow_run_id": "5f26653c3c83420fa047cfe4ec040eea",
+  "registered": {
+    "name": "qlora-cs-llama2-7b-chat",
+    "version": "1",
+    "alias": "champion",
+    "source": "file:///G:/QLoRA/mlflow/artifacts/1/5f26653c3c83420fa047cfe4ec040eea/artifacts/adapter",
+    "merged_path": "G:\\QLoRA\\artifacts\\merged\\llama2-7b-qlora"
+  }
+}

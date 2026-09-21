@@ -1,0 +1,134 @@
+{
+  "eval:meta-llama/Llama-2-7b-chat-hf": {
+    "peak_gb": 15.48,
+    "lower_bound": false,
+    "latest_gb": 15.48,
+    "latest_at": "2026-11-19T14:41:38",
+    "latest_note": "eval memprobe-after [replaced stale 30.16 GB] | 14 GB PyTorch reserved-VRAM cap active; NVIDIA sysmem fallback was still ON (verified later)",
+    "history": [
+      {
+        "gb": 20.4,
+        "at": "2026-11-19T13:44:39",
+        "note": "LOWER BOUND: partial run stopped mid-generation 2026-11-19 ~12:58, observed via Get-Process PagedMemorySize64; pre-fix code (no empty_cache / allocator conf)",
+        "lower_bound": true
+      },
+      {
+        "gb": 30.16,
+        "at": "2026-11-19T14:25:30",
+        "note": "eval llama2-7b-qlora [replaced lower bound 20.4 GB] | measured with NVIDIA sysmem fallback ON (26 GB reserved on a 16 GB GPU), no PyTorch VRAM cap",
+        "lower_bound": false
+      },
+      {
+        "gb": 15.48,
+        "at": "2026-11-19T14:41:38",
+        "note": "eval memprobe-after [replaced stale 30.16 GB]",
+        "lower_bound": false
+      }
+    ]
+  },
+  "train-full:TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T": {
+    "peak_gb": 19.74,
+    "lower_bound": false,
+    "latest_gb": 19.74,
+    "latest_at": "2026-11-19T15:01:50",
+    "latest_note": "train proxy-full",
+    "history": [
+      {
+        "gb": 19.74,
+        "at": "2026-11-19T15:01:50",
+        "note": "train proxy-full",
+        "lower_bound": false
+      }
+    ]
+  },
+  "train-lora:TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T": {
+    "peak_gb": 17.96,
+    "lower_bound": false,
+    "latest_gb": 17.96,
+    "latest_at": "2026-11-19T15:12:29",
+    "latest_note": "train proxy-lora",
+    "history": [
+      {
+        "gb": 17.96,
+        "at": "2026-11-19T15:12:29",
+        "note": "train proxy-lora",
+        "lower_bound": false
+      }
+    ]
+  },
+  "train-qlora:TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T": {
+    "peak_gb": 17.13,
+    "lower_bound": false,
+    "latest_gb": 17.13,
+    "latest_at": "2026-11-19T15:25:46",
+    "latest_note": "train proxy-qlora",
+    "history": [
+      {
+        "gb": 17.13,
+        "at": "2026-11-19T15:25:46",
+        "note": "train proxy-qlora",
+        "lower_bound": false
+      }
+    ]
+  },
+  "merge:meta-llama/Llama-2-7b-chat-hf": {
+    "peak_gb": 16.53,
+    "lower_bound": false,
+    "latest_gb": 16.53,
+    "latest_at": "2026-11-19T15:50:48",
+    "latest_note": "CPU float16 merge llama2-7b-qlora",
+    "history": [
+      {
+        "gb": 16.53,
+        "at": "2026-11-19T15:50:48",
+        "note": "CPU float16 merge llama2-7b-qlora",
+        "lower_bound": false
+      }
+    ]
+  },
+  "serve:meta-llama/Llama-2-7b-chat-hf": {
+    "peak_gb": 15.47,
+    "lower_bound": false,
+    "latest_gb": 15.47,
+    "latest_at": "2026-11-19T22:24:18",
+    "latest_note": "server pid 20876 (code ab110a0): PeakPagedMemorySize64 after 8 curl checks, 1 chat turn, warm-up + 20-request load test",
+    "history": [
+      {
+        "gb": 2.33,
+        "at": "2026-11-19T21:52:53",
+        "note": "server 0 requests",
+        "lower_bound": false
+      },
+      {
+        "gb": 2.33,
+        "at": "2026-11-19T21:53:11",
+        "note": "server 0 requests",
+        "lower_bound": false
+      },
+      {
+        "gb": 2.33,
+        "at": "2026-11-19T21:54:00",
+        "note": "server 0 requests",
+        "lower_bound": false
+      },
+      {
+        "gb": 2.33,
+        "at": "2026-11-19T21:54:59",
+        "note": "server 0 requests",
+        "lower_bound": false
+      },
+      {
+        "gb": 15.47,
+        "at": "2026-11-19T21:59:51",
+        "note": "server pid 22360: PeakPagedMemorySize64 via Get-Process after chat + 20-request load test (read externally; process stopped without its shutdown hook) [replaced stale 2.33 GB]",
+        "lower_bound": false
+      },
+      {
+        "gb": 15.47,
+        "at": "2026-11-19T22:24:18",
+        "note": "server pid 20876 (code ab110a0): PeakPagedMemorySize64 after 8 curl checks, 1 chat turn, warm-up + 20-request load test",
+        "lower_bound": false
+      }
+    ]
+  }
+}

@@ -7,3 +7,23 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# never commit secrets, weights, data, runs or caches (they live under QLORA_ROOT, outside this repo)
+mlruns/
+mlflow/
+runs/
+artifacts/
+artifacts/merged/
+data/
+cache/
+.cache/
+huggingface/
+tmp/
+logs/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.gguf
+_readme_preview.html

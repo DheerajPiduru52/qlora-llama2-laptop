@@ -1,0 +1,175 @@
+{
+  "url": "http://127.0.0.1:8080",
+  "n": 20,
+  "concurrency": 1,
+  "ok": 20,
+  "errors": 0,
+  "latency_p50_s": 4.312,
+  "latency_p95_s": 11.202,
+  "latency_mean_s": 5.702,
+  "tokens_total": 2588,
+  "wall_s": 114.04,
+  "throughput_tokens_per_s": 22.7,
+  "per_request_tokens_per_s_p50": 22.8,
+  "mean_generated_tokens": 129.4,
+  "peak_vram_reserved_gb": 4.496,
+  "peak_vram_allocated_gb": 3.929,
+  "physical_vram_gb": 15.92,
+  "server": {
+    "loaded": "registry",
+    "weights": "G:\\QLoRA\\tmp\\serve_cache\\qlora-cs-llama2-7b-chat-v1\\adapter",
+    "quantization": "nf4 4-bit base + LoRA adapter",
+    "vram_cap_gb": 14.0,
+    "registry_name": "qlora-cs-llama2-7b-chat",
+    "version": "1",
+    "alias": "champion"
+  },
+  "generation": {
+    "temperature": 0.0,
+    "max_new_tokens": 256
+  },
+  "warmup_request": "1 uncounted (16 tokens)",
+  "requests": [
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 2.5087194000002455,
+      "tokens": 56,
+      "server_ms": 2480.2
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 11.222710500000176,
+      "tokens": 256,
+      "server_ms": 11203.3
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 11.201158099999702,
+      "tokens": 256,
+      "server_ms": 11168.7
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 9.693286300000182,
+      "tokens": 222,
+      "server_ms": 9661.0
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 11.147277600000052,
+      "tokens": 256,
+      "server_ms": 11127.6
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 4.975068299999748,
+      "tokens": 113,
+      "server_ms": 4952.4
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 3.639467600000444,
+      "tokens": 82,
+      "server_ms": 3626.1
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 4.409671800000069,
+      "tokens": 100,
+      "server_ms": 4400.4
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 3.715759799999887,
+      "tokens": 83,
+      "server_ms": 3682.6
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 4.350529899999856,
+      "tokens": 98,
+      "server_ms": 4335.6
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 9.41694150000012,
+      "tokens": 214,
+      "server_ms": 9386.1
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 8.919227500000034,
+      "tokens": 200,
+      "server_ms": 8909.1
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 4.223617099999956,
+      "tokens": 96,
+      "server_ms": 4190.2
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 4.4499996999998075,
+      "tokens": 101,
+      "server_ms": 4420.3
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 3.6913712000000487,
+      "tokens": 83,
+      "server_ms": 3669.8
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 3.8962056000000302,
+      "tokens": 89,
+      "server_ms": 3887.1
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 4.104155300000002,
+      "tokens": 94,
+      "server_ms": 4095.4
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 2.1548538000001827,
+      "tokens": 47,
+      "server_ms": 2123.1
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 2.047721999999794,
+      "tokens": 45,
+      "server_ms": 2024.1
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "latency_s": 4.272931400000289,
+      "tokens": 97,
+      "server_ms": 4244.6
+    }
+  ],
+  "mlflow_run_id": "fd1ccb2963be464184e3e153dff4008c"
+}

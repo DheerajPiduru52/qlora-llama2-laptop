@@ -239,6 +239,16 @@ def load_test_cmd(
     raise typer.Exit(0 if s["errors"] == 0 else 1)
 
 
+@app.command("figures")
+def figures_cmd() -> None:
+    """README figures from the real results (repo/docs/images, light + dark, SVG + 2x PNG, contact sheet)."""
+    import runpy
+
+    from qlora_pipeline.paths import repo_dir
+
+    runpy.run_path(str(repo_dir() / "scripts" / "make_figures.py"), run_name="__main__")
+
+
 def _later(phase: int):
     def _stub() -> None:
         typer.echo(f"Not implemented yet: arrives in Phase {phase}.")
