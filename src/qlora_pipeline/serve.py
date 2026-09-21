@@ -36,20 +36,24 @@ GB = 1024**3
 
 
 class Parameters(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")  # tolerate other SageMaker/HF params (top_k, do_sample, ...)
     max_new_tokens: int | None = Field(None, ge=1)
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     top_p: float | None = Field(None, gt=0.0, le=1.0)
 
 
 class InvocationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
     inputs: str = Field(..., min_length=1)
     parameters: Parameters = Field(default_factory=Parameters)
 
 
 class InvocationResponse(BaseModel):
     generated_text: str
+
+
+class InputTooLongError(ValueError):
+    """The only engine error that is the client's fault (-> HTTP 400)."""
 
 
 class Engine(Protocol):
@@ -80,7 +84,7 @@ class HFEngine:
 
         ids = encode_prompt(self.tok, self.cfg.data.system_prompt, text)
         if len(ids) > self.cfg.data.max_seq_length:
-            raise ValueError(f"input is {len(ids)} tokens; the limit is {self.cfg.data.max_seq_length}")
+            raise InputTooLongError(f"input is {len(ids)} tokens; the limit is {self.cfg.data.max_seq_length}")
         sample = temperature > 0
         gc = GenerationConfig(
             do_sample=sample, num_beams=1, max_new_tokens=max_new_tokens, repetition_penalty=1.0,
@@ -182,7 +186,7 @@ def create_app(cfg: Config, engine: Engine | None = None) -> FastAPI:
         if state["engine"] is None:
             threading.Thread(target=_load, name="model-load", daemon=True).start()
         yield
-        if engine is None and state["engine"] is not None:
+        if isinstance(state["engine"], HFEngine):  # only a real GPU engine has a meaningful commit peak
             from qlora_pipeline.model import record_peak
 
             record_peak(cfg, "serve", f"server {state['requests']} requests")
@@ -216,8 +220,10 @@ def create_app(cfg: Config, engine: Engine | None = None) -> FastAPI:
 
         try:
             text, n, ms = await asyncio.get_running_loop().run_in_executor(None, _run)
-        except ValueError as e:
+        except InputTooLongError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception as e:  # noqa: BLE001 - e.g. CUDA OOM: report as JSON, keep serving
+            return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
         state["requests"] += 1
         return JSONResponse({"generated_text": text},
                             headers={"X-Generated-Tokens": str(n), "X-Inference-Ms": f"{ms:.1f}"})  # fmt: skip
@@ -236,8 +242,11 @@ def create_app(cfg: Config, engine: Engine | None = None) -> FastAPI:
         eng = state["engine"]
         if eng is None:
             return JSONResponse({"error": "model not loaded"}, status_code=503)
-        with lock:
-            eng.reset_peak()
+        def _reset():
+            with lock:
+                eng.reset_peak()
+
+        await asyncio.get_running_loop().run_in_executor(None, _reset)
         return {"ok": True}
 
     return app
@@ -292,7 +301,12 @@ def chat_repl(cfg: Config, url: str | None = None, temperature: float | None = N
         params: dict[str, Any] = {}
         if temperature is not None:
             params["temperature"] = temperature
-        r = httpx.post(f"{u}/invocations", json={"inputs": msg, "parameters": params}, timeout=cfg.serve.request_timeout_s)
+        try:
+            r = httpx.post(f"{u}/invocations", json={"inputs": msg, "parameters": params},
+                           timeout=cfg.serve.request_timeout_s)  # fmt: skip
+        except httpx.HTTPError as e:
+            print(f"[request failed] {type(e).__name__}: {e}", flush=True)
+            continue
         if r.status_code != 200:
             print(f"[error {r.status_code}] {r.text}", flush=True)
             continue
@@ -321,19 +335,28 @@ def load_test(cfg: Config, url: str | None = None, n: int | None = None, concurr
     conc = concurrency or cfg.serve.load_test_concurrency
     wait_ready(u)
     rows = load_split(cfg, "test")[:n]
+    n = len(rows)
+    body = {"temperature": 0.0, "max_new_tokens": cfg.serve.load_test_max_new_tokens}
+    # one uncounted warm-up request so CUDA/kernel warm-up does not land in the measured latencies
+    httpx.post(f"{u}/invocations", json={"inputs": "Hello, I need help with my order.",
+                                         "parameters": {**body, "max_new_tokens": 16}},
+               timeout=cfg.serve.request_timeout_s)  # fmt: skip
     server_before = httpx.get(f"{u}/stats", timeout=30).json()
     httpx.post(f"{u}/stats/reset-peak", timeout=60).raise_for_status()
-    body = {"temperature": 0.0, "max_new_tokens": cfg.serve.load_test_max_new_tokens}
 
     def one(r: dict) -> dict:
         t0 = time.perf_counter()
-        resp = httpx.post(f"{u}/invocations", json={"inputs": r["instruction"], "parameters": body},
-                          timeout=cfg.serve.request_timeout_s)  # fmt: skip
+        try:
+            resp = httpx.post(f"{u}/invocations", json={"inputs": r["instruction"], "parameters": body},
+                              timeout=cfg.serve.request_timeout_s)  # fmt: skip
+        except httpx.HTTPError as e:
+            return {"ok": False, "status": None, "error": f"{type(e).__name__}: {e}",
+                    "latency_s": time.perf_counter() - t0, "tokens": 0, "server_ms": None}  # fmt: skip
         lat = time.perf_counter() - t0
         ok = resp.status_code == 200
         return {"ok": ok, "status": resp.status_code, "latency_s": lat,
                 "tokens": int(resp.headers.get("X-Generated-Tokens", 0)) if ok else 0,
-                "server_ms": float(resp.headers.get("X-Inference-Ms", "nan")) if ok else math.nan}  # fmt: skip
+                "server_ms": float(resp.headers.get("X-Inference-Ms", "nan")) if ok else None}  # fmt: skip
 
     t0 = time.perf_counter()
     with cf.ThreadPoolExecutor(max_workers=conc) as ex:
@@ -344,7 +367,7 @@ def load_test(cfg: Config, url: str | None = None, n: int | None = None, concurr
     good = [r for r in results if r["ok"]]
     lats = [r["latency_s"] for r in good]
     toks = sum(r["tokens"] for r in good)
-    per_req_tps = [r["tokens"] / (r["server_ms"] / 1000) for r in good if r["server_ms"] > 0]
+    per_req_tps = [r["tokens"] / (r["server_ms"] / 1000) for r in good if r["server_ms"] and r["server_ms"] > 0]
     summary = {
         "url": u, "n": n, "concurrency": conc, "ok": len(good), "errors": len(results) - len(good),
         "latency_p50_s": round(_pct(lats, 50), 3), "latency_p95_s": round(_pct(lats, 95), 3),
@@ -356,8 +379,10 @@ def load_test(cfg: Config, url: str | None = None, n: int | None = None, concurr
         "peak_vram_reserved_gb": server_after.get("peak_reserved_gb"),
         "peak_vram_allocated_gb": server_after.get("peak_allocated_gb"),
         "physical_vram_gb": server_after.get("physical_vram_gb"),
-        "server": server_before.get("info"), "generation": body, "requests": results,
+        "server": server_before.get("info"), "generation": body, "warmup_request": "1 uncounted (16 tokens)",
+        "requests": results,
     }  # fmt: skip
+    summary = {k: (None if isinstance(v, float) and not math.isfinite(v) else v) for k, v in summary.items()}
     out = ensure_dir(reports_dir()) / "load_test.json"
     out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     tags = {"stage": "load-test", "server_url": u, "model_source": str((summary["server"] or {}).get("loaded"))}

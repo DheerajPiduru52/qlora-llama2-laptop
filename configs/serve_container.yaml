@@ -1,0 +1,15 @@
+# Container serving (see Dockerfile): the merged model mounted at /opt/ml/model, served in 4-bit on 0.0.0.0:8080.
+# No MLflow server and no Hugging Face Hub access are needed inside the container.
+extends: serve.yaml
+
+model:
+  name: /opt/ml/model
+  tokenizer: /opt/ml/model
+  revision: null
+
+serve:
+  host: 0.0.0.0
+  port: 8080
+  source: merged
+  fallback_to_merged: false
+  merged_path: /opt/ml/model

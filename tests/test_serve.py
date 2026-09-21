@@ -16,9 +16,11 @@ class FakeEngine:
         self.calls = []
 
     def generate(self, text, max_new_tokens, temperature, top_p):
+        from qlora_pipeline.serve import InputTooLongError
+
         self.calls.append((text, max_new_tokens, temperature, top_p))
         if text == "too long":
-            raise ValueError("input is 2000 tokens; the limit is 1024")
+            raise InputTooLongError("input is 2000 tokens; the limit is 1024")
         return f"reply to: {text}", 7
 
     def stats(self):
@@ -57,6 +59,21 @@ def test_ping_503_while_loading(cfg, monkeypatch):
         gate.set()
 
 
+def test_fake_engine_never_records_commit_peak(cfg, monkeypatch):
+    import qlora_pipeline.model as m
+    import qlora_pipeline.serve as srv
+
+    calls = []
+    monkeypatch.setattr(m, "record_peak", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(srv, "load_engine", lambda _cfg: FakeEngine())
+    with TestClient(create_app(cfg)) as c:
+        for _ in range(50):
+            if c.get("/ping").status_code == 200:
+                break
+            threading.Event().wait(0.05)
+    assert calls == []  # a fake engine must not write logs/commit_peaks.json
+
+
 def test_invocations_contract(client, cfg):
     r = client.post("/invocations", json={"inputs": "where is my order?",
                                           "parameters": {"max_new_tokens": 64, "temperature": 0.7}})  # fmt: skip
@@ -73,11 +90,25 @@ def test_defaults_are_greedy_and_configured(client, cfg):
 
 @pytest.mark.parametrize("body", [
     {}, {"inputs": ""}, {"inputs": "x", "parameters": {"temperature": -1}},
-    {"inputs": "x", "parameters": {"max_new_tokens": 0}}, {"inputs": "x", "parameters": {"bogus": 1}},
-    {"inputs": "x", "extra": 1},
+    {"inputs": "x", "parameters": {"max_new_tokens": 0}}, {"inputs": 5},
 ])  # fmt: skip
 def test_invalid_requests_rejected(client, body):
     assert client.post("/invocations", json=body).status_code == 422
+
+
+def test_unknown_sagemaker_params_are_ignored(client):
+    r = client.post("/invocations", json={"inputs": "x", "parameters": {"top_k": 50, "return_full_text": False},
+                                          "extra": 1})  # fmt: skip
+    assert r.status_code == 200 and r.json() == {"generated_text": "reply to: x"}
+
+
+def test_engine_crash_is_json_500(client):
+    def boom(*a, **k):
+        raise RuntimeError("CUDA out of memory")
+
+    client.engine.generate = boom
+    r = client.post("/invocations", json={"inputs": "x"})
+    assert r.status_code == 500 and "out of memory" in r.json()["error"]
 
 
 def test_max_new_tokens_limit(client, cfg):

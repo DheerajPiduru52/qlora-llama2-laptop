@@ -89,12 +89,18 @@ curl -s -X POST http://127.0.0.1:8080/invocations -H "Content-Type: application/
 
 Response: `{"generated_text": "..."}`, with `X-Generated-Tokens` and `X-Inference-Ms` headers. `temperature`
 0 means greedy (the eval setting); `max_new_tokens` is capped at `serve.max_new_tokens_limit` (512).
-`GET /stats` reports the loaded model and peak VRAM.
+`GET /stats` reports the loaded model and peak VRAM. Unknown extra parameters (e.g. `top_k`) are ignored.
+
+Client flags: `qlora chat [--url URL] [--temperature T]` (each turn is independent: the model was trained on
+single-turn data, so no history is sent); `qlora load-test [--url URL] [--n 20] [--concurrency 1]` (one uncounted
+warm-up request, then N greedy requests; results in `artifacts\reports\load_test.json` and MLflow).
 
 ## Docker (written, not built)
 
 `Dockerfile` builds a CUDA 12.8 image that serves the merged model from `/opt/ml/model` on port 8080 with
-the same routes. It was not built here because Docker Desktop stores its disk image on C:. `uv.lock` is resolved
+the same routes (`configs/serve_container.yaml`). Start it the SageMaker way, with `serve` as the argument and the
+merged model directory mounted at `/opt/ml/model`:
+`docker run --gpus all -p 8080:8080 -v <artifacts\merged\llama2-7b-qlora>:/opt/ml/model qlora-cs serve`. It was not built here because Docker Desktop stores its disk image on C:. `uv.lock` is resolved
 for Windows only, so re-lock for linux before relying on exact pins in the image.
 
 ## Layout
